@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V9.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V10.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -114,11 +114,12 @@ class GnuplotApp:
         widgets = {}
         
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
-        columns = ("file", "x_col", "y_col", "axis", "style", "title")
+        # <<< MODIFIED: Added 'clean' column >>>
+        columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
         widgets['tree'] = ttk.Treeview(dataset_frame, columns=columns, show="tree headings", height=4)
         widgets['tree'].heading("#0", text="Show"); widgets['tree'].column("#0", width=40, anchor='center', stretch=False)
-        widgets['tree'].heading("file", text="File"); widgets['tree'].heading("x_col", text="X"); widgets['tree'].heading("y_col", text="Y"); widgets['tree'].heading("axis", text="Axis"); widgets['tree'].heading("style", text="Style"); widgets['tree'].heading("title", text="Title")
-        widgets['tree'].column("file", width=100); widgets['tree'].column("x_col", width=30, anchor='center'); widgets['tree'].column("y_col", width=30, anchor='center'); widgets['tree'].column("axis", width=40, anchor='center'); widgets['tree'].column("style", width=60); widgets['tree'].pack(fill='x')
+        widgets['tree'].heading("file", text="File"); widgets['tree'].heading("x_col", text="X"); widgets['tree'].heading("y_col", text="Y"); widgets['tree'].heading("axis", text="Axis"); widgets['tree'].heading("style", text="Style"); widgets['tree'].heading("title", text="Title"); widgets['tree'].heading("clean", text="Clean")
+        widgets['tree'].column("file", width=100); widgets['tree'].column("x_col", width=30, anchor='center'); widgets['tree'].column("y_col", width=30, anchor='center'); widgets['tree'].column("axis", width=40, anchor='center'); widgets['tree'].column("style", width=60); widgets['tree'].column("clean", width=40, anchor='center'); widgets['tree'].pack(fill='x')
         widgets['tree'].bind("<<TreeviewSelect>>", lambda event, w=widgets: self.on_tree_select(event, w))
         widgets['tree'].bind("<Button-1>", lambda event, w=widgets, k=key: self.toggle_checkbox(event, w, k))
 
@@ -130,6 +131,10 @@ class GnuplotApp:
         widgets['plot_style'] = tk.StringVar(value='lines'); ttk.Label(editor_frame, text="Plot Style:").grid(row=2, column=0, sticky="w", pady=2); ttk.Combobox(editor_frame, textvariable=widgets['plot_style'], values=['lines', 'points', 'linespoints', 'dots', 'impulses'], width=15).grid(row=2, column=1, sticky="ew", columnspan=2)
         widgets['plot_title'] = tk.StringVar(); plot_title_entry = ttk.Entry(editor_frame, textvariable=widgets['plot_title'], width=20); plot_title_entry.grid(row=3, column=1, sticky="ew", columnspan=3); plot_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Title:").grid(row=3, column=0, sticky="w", pady=2)
         
+        # <<< NEW: Checkbox for data cleaning >>>
+        widgets['clean_data'] = tk.BooleanVar(value=True)
+        ttk.Checkbutton(editor_frame, text="Clean Vector Data ( )", variable=widgets['clean_data']).grid(row=3, column=4, sticky="w", columnspan=2)
+
         dataset_actions_frame = ttk.Frame(controls_frame); dataset_actions_frame.pack(fill='x', pady=5)
         ttk.Button(dataset_actions_frame, text="Add Dataset", command=lambda w=widgets, k=key: self.add_dataset(w, k)).pack(side='left', padx=5)
         widgets['update_button'] = ttk.Button(dataset_actions_frame, text="Update Selected", state="disabled", command=lambda w=widgets, k=key: self.update_dataset(w, k)); widgets['update_button'].pack(side='left', padx=5)
@@ -194,49 +199,72 @@ class GnuplotApp:
         state = 'normal' if widgets['lock_aspect_ratio'].get() else 'disabled'
         widgets['aspect_ratio_entry'].config(state=state)
     
-    # <<< NEW: Helper method for validating numeric inputs >>>
     def _validate_numeric(self, value_str, field_name):
-        """Helper to validate if a string is a valid number (float or int)."""
-        if not value_str.strip(): return True # Allow empty strings, gnuplot can handle them
-        try:
-            float(value_str)
-            return True
+        if not value_str.strip(): return True
+        try: float(value_str); return True
         except ValueError:
-            messagebox.showwarning("Invalid Input", 
-                                   f"Please enter a valid number for '{field_name}'.\n"
-                                   f"You entered: '{value_str}'")
+            messagebox.showwarning("Invalid Input", f"Please enter a valid number for '{field_name}'.\nYou entered: '{value_str}'")
             return False
         
+    # <<< MODIFIED: This function now also returns the data to be piped to gnuplot >>>
     def generate_gnuplot_script(self, widgets, key, terminal_config):
-        # <<< MODIFIED: Added proactive validation for all numeric fields >>>
-        # --- Input Validation ---
         if widgets['x_range_mode'].get() == 'manual':
-            if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or \
-               not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None
+            if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None, None
         if widgets['y_range_mode'].get() == 'manual':
-            if not self._validate_numeric(widgets['y_min'].get(), "Y1-Axis Min") or \
-               not self._validate_numeric(widgets['y_max'].get(), "Y1-Axis Max"): return None
+            if not self._validate_numeric(widgets['y_min'].get(), "Y1-Axis Min") or not self._validate_numeric(widgets['y_max'].get(), "Y1-Axis Max"): return None, None
         if widgets['y2_range_mode'].get() == 'manual':
-            if not self._validate_numeric(widgets['y2_min'].get(), "Y2-Axis Min") or \
-               not self._validate_numeric(widgets['y2_max'].get(), "Y2-Axis Max"): return None
+            if not self._validate_numeric(widgets['y2_min'].get(), "Y2-Axis Min") or not self._validate_numeric(widgets['y2_max'].get(), "Y2-Axis Max"): return None, None
         if widgets['lock_aspect_ratio'].get():
-            if not self._validate_numeric(widgets['aspect_ratio'].get(), "Aspect Ratio"): return None
+            if not self._validate_numeric(widgets['aspect_ratio'].get(), "Aspect Ratio"): return None, None
         if widgets['use_custom_margins'].get():
-            if not self._validate_numeric(widgets['lmargin'].get(), "Left Margin") or \
-               not self._validate_numeric(widgets['rmargin'].get(), "Right Margin") or \
-               not self._validate_numeric(widgets['tmargin'].get(), "Top Margin") or \
-               not self._validate_numeric(widgets['bmargin'].get(), "Bottom Margin"): return None
-        # --- End Validation ---
+            if not self._validate_numeric(widgets['lmargin'].get(), "Left Margin") or not self._validate_numeric(widgets['rmargin'].get(), "Right Margin") or not self._validate_numeric(widgets['tmargin'].get(), "Top Margin") or not self._validate_numeric(widgets['bmargin'].get(), "Bottom Margin"): return None, None
 
         y1_clauses, y2_clauses = [], []
+        
+        # <<< NEW: Logic to prepare cleaned data for piping >>>
+        data_to_pipe = ""
+        cleaned_data_cache = {}
+
         for item_id in widgets['tree'].get_children():
             if 'checked' in widgets['tree'].item(item_id, 'tags'):
-                filepath = widgets['tree'].item(item_id, 'tags')[0]
                 values = widgets['tree'].item(item_id, 'values')
-                clause = f"'{filepath}' using {values[1]}:{values[2]} with {values[4]} title '{values[5]}'"
+                filepath = widgets['tree'].item(item_id, 'tags')[0]
+                
+                # Check if this dataset needs cleaning
+                if values[6] == 'Yes':
+                    plot_source = "'-'" # Tell gnuplot to read from stdin
+                    # Read and clean the file if not already cached
+                    if filepath not in cleaned_data_cache:
+                        try:
+                            with open(filepath, 'r') as f:
+                                content = f.read()
+                            # Clean the data by removing parentheses
+                            cleaned_content = content.replace('(', ' ').replace(')', ' ')
+                            cleaned_data_cache[filepath] = cleaned_content
+                        except Exception as e:
+                            messagebox.showerror("File Error", f"Could not read or clean file:\n{filepath}\n\nError: {e}")
+                            return None, None
+                else:
+                    plot_source = f"'{filepath}'" # Use the filename directly
+
+                clause = f"{plot_source} using {values[1]}:{values[2]} with {values[4]} title '{values[5]}'"
+                
                 if values[3] == 'Y2': y2_clauses.append(clause + " axes x1y2")
                 else: y1_clauses.append(clause + " axes x1y1")
-        if not y1_clauses and not y2_clauses: return None
+
+        # After generating clauses, build the final data blob to pipe
+        for clause in y1_clauses + y2_clauses:
+             if "'-'" in clause:
+                filepath = clause.split("'")[2] # This is a bit fragile, relies on our structure
+                # Find the original filepath from a dataset that uses '-'
+                for item_id in widgets['tree'].get_children():
+                    if 'checked' in widgets['tree'].item(item_id, 'tags') and widgets['tree'].item(item_id, 'values')[6] == 'Yes':
+                        original_filepath = widgets['tree'].item(item_id, 'tags')[0]
+                        if original_filepath in cleaned_data_cache:
+                             data_to_pipe += cleaned_data_cache[original_filepath] + "\ne\n"
+                             break # Add data for this plot clause
+
+        if not y1_clauses and not y2_clauses: return None, None
         full_plot_command = "plot " + ", ".join(y1_clauses + y2_clauses)
         y2_settings = ""
         if y2_clauses:
@@ -248,8 +276,8 @@ class GnuplotApp:
         else: y2_settings = "unset y2tics\nunset y2label\n"
         
         if widgets['grid_on'].get():
-            color_map = {'Light': 'gray40', 'Medium': 'gray20', 'Dark': 'black'}
-            grid_color = color_map.get(widgets['grid_style'].get(), 'black')
+            color_map = {'Light': 'gray80', 'Medium': 'gray60', 'Dark': 'gray40'}
+            grid_color = color_map.get(widgets['grid_style'].get(), 'gray60')
             grid_settings = f'set grid back linetype 0 linecolor "{grid_color}"'
         else:
             grid_settings = 'unset grid'
@@ -269,7 +297,7 @@ class GnuplotApp:
         else: margin_settings = "unset lmargin; unset rmargin; unset tmargin; unset bmargin\n"
         aspect_ratio_settings = f"set size ratio {widgets['aspect_ratio'].get()}" if widgets['lock_aspect_ratio'].get() and widgets['aspect_ratio'].get() else "set size noratio"
 
-        return f"""
+        script = f"""
             set terminal {terminal_config['term']} size {terminal_config['size']} enhanced font 'Verdana,10'
             set output '{terminal_config['output']}'
             {margin_settings}
@@ -283,19 +311,27 @@ class GnuplotApp:
             {full_plot_command}
             unset output
         """
+        return script, data_to_pipe
 
+    # <<< MODIFIED: Plot function now handles piping data to gnuplot >>>
     def plot(self, widgets, key):
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         image_filename = f"plot_{key}.png"
         terminal_config = {'term': 'pngcairo', 'size': f'{width},{height}', 'output': image_filename}
-        gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
-        if not gnuplot_script: 
-            # This now catches both "no visible datasets" and validation failures
-            return
         
-        completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
+        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        
+        if not gnuplot_script: 
+            return # Catches validation failures or no visible data
+        
+        # Combine the script and the data for piping
+        full_input = gnuplot_script
+        if data_to_pipe:
+            full_input += "\n" + data_to_pipe
+
+        completed_process = subprocess.run(['gnuplot'], input=full_input, text=True, capture_output=True)
+
         if completed_process.returncode != 0: 
-            # This will now only show genuine gnuplot errors (e.g., file not found)
             messagebox.showerror("Gnuplot Error", completed_process.stderr)
             return
         try:
@@ -310,11 +346,18 @@ class GnuplotApp:
         term_map = {'.png': 'pngcairo', '.svg': 'svg', '.pdf': 'pdfcairo', '.eps': 'postscript eps enhanced color'}
         if extension not in term_map: messagebox.showerror("Unsupported Format", f"File format '{extension}' is not supported."); return
         terminal_config = {'term': term_map[extension], 'size': '1024,768', 'output': filepath}
-        gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
+
+        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+
         if not gnuplot_script: 
             messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
             return
-        completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
+            
+        full_input = gnuplot_script
+        if data_to_pipe:
+            full_input += "\n" + data_to_pipe
+
+        completed_process = subprocess.run(['gnuplot'], input=full_input, text=True, capture_output=True)
         if completed_process.returncode != 0: messagebox.showerror("Gnuplot Error", completed_process.stderr)
         else: messagebox.showinfo("Success", f"Plot saved successfully to:\n{filepath}")
         
@@ -322,11 +365,16 @@ class GnuplotApp:
         image_filename = os.path.abspath(f"plot_{key}_cropped.png") 
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         terminal_config = {'term': 'pngcairo crop', 'size': f'{width},{height}', 'output': image_filename}
-        gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
+        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
         if not gnuplot_script: 
             messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
             return
-        completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
+        
+        full_input = gnuplot_script
+        if data_to_pipe:
+            full_input += "\n" + data_to_pipe
+
+        completed_process = subprocess.run(['gnuplot'], input=full_input, text=True, capture_output=True)
         if completed_process.returncode != 0: messagebox.showerror("Gnuplot Error", completed_process.stderr); return
         if not os.path.exists(image_filename): messagebox.showerror("Error", "Cropped plot image not found."); return
         system = platform.system()
@@ -352,13 +400,16 @@ class GnuplotApp:
         filename = filedialog.askopenfilename(title="Select a data file"); 
         if filename: widgets['filepath'].set(filename); widgets['plot_title'].set(os.path.basename(filename))
         
+    # <<< MODIFIED: Add 'clean_data' state when adding dataset >>>
     def add_dataset(self, widgets, key):
         filepath = widgets['filepath'].get()
         if not filepath: return
-        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get())
+        clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
+        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get(), clean_state)
         widgets['tree'].insert('', 'end', values=values, tags=(filepath, 'checked'), text="☑")
         self.plot(widgets, key)
 
+    # <<< MODIFIED: Add 'clean_data' state when duplicating dataset >>>
     def duplicate_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection()
         if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
@@ -370,11 +421,13 @@ class GnuplotApp:
             self.plot(widgets, key)
         except ValueError: messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
         
+    # <<< MODIFIED: Add 'clean_data' state when updating dataset >>>
     def update_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: return
         filepath = widgets['filepath'].get()
-        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get())
+        clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
+        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get(), clean_state)
         current_tags = widgets['tree'].item(selected_item, 'tags'); visibility_tag = 'checked' if 'checked' in current_tags else 'unchecked'
         widgets['tree'].item(selected_item, values=values, tags=(filepath, visibility_tag))
         widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
@@ -387,6 +440,7 @@ class GnuplotApp:
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
 
+    # <<< MODIFIED: Update the 'clean_data' checkbox on selection >>>
     def on_tree_select(self, event, widgets):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: 
@@ -395,6 +449,7 @@ class GnuplotApp:
         widgets['update_button'].config(state='normal'); widgets['duplicate_button'].config(state='normal'); widgets['remove_button'].config(state='normal')
         values = widgets['tree'].item(selected_item, "values"); full_path = widgets['tree'].item(selected_item, "tags")[0]
         widgets['filepath'].set(full_path); widgets['x_col'].set(values[1]); widgets['y_col'].set(values[2]); widgets['y_axis_select'].set(values[3]); widgets['plot_style'].set(values[4]); widgets['plot_title'].set(values[5])
+        widgets['clean_data'].set(True if values[6] == 'Yes' else False)
         
     def start_replot(self, widgets, key):
         self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
@@ -405,9 +460,6 @@ class GnuplotApp:
 
     def auto_replot_loop(self, widgets, key):
         if self.auto_replotting:
-            # It's important that plot() is called before the 'after' call,
-            # so that any errors in the plot itself don't prevent the user
-            # from fixing the auto-replot interval.
             self.plot(widgets, key)
             try: 
                 interval = int(widgets['replot_interval'].get())
