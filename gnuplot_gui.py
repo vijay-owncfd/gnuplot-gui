@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V8.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V9.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -193,8 +193,41 @@ class GnuplotApp:
     def update_aspect_ratio_entry_state(self, widgets):
         state = 'normal' if widgets['lock_aspect_ratio'].get() else 'disabled'
         widgets['aspect_ratio_entry'].config(state=state)
+    
+    # <<< NEW: Helper method for validating numeric inputs >>>
+    def _validate_numeric(self, value_str, field_name):
+        """Helper to validate if a string is a valid number (float or int)."""
+        if not value_str.strip(): return True # Allow empty strings, gnuplot can handle them
+        try:
+            float(value_str)
+            return True
+        except ValueError:
+            messagebox.showwarning("Invalid Input", 
+                                   f"Please enter a valid number for '{field_name}'.\n"
+                                   f"You entered: '{value_str}'")
+            return False
         
     def generate_gnuplot_script(self, widgets, key, terminal_config):
+        # <<< MODIFIED: Added proactive validation for all numeric fields >>>
+        # --- Input Validation ---
+        if widgets['x_range_mode'].get() == 'manual':
+            if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or \
+               not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None
+        if widgets['y_range_mode'].get() == 'manual':
+            if not self._validate_numeric(widgets['y_min'].get(), "Y1-Axis Min") or \
+               not self._validate_numeric(widgets['y_max'].get(), "Y1-Axis Max"): return None
+        if widgets['y2_range_mode'].get() == 'manual':
+            if not self._validate_numeric(widgets['y2_min'].get(), "Y2-Axis Min") or \
+               not self._validate_numeric(widgets['y2_max'].get(), "Y2-Axis Max"): return None
+        if widgets['lock_aspect_ratio'].get():
+            if not self._validate_numeric(widgets['aspect_ratio'].get(), "Aspect Ratio"): return None
+        if widgets['use_custom_margins'].get():
+            if not self._validate_numeric(widgets['lmargin'].get(), "Left Margin") or \
+               not self._validate_numeric(widgets['rmargin'].get(), "Right Margin") or \
+               not self._validate_numeric(widgets['tmargin'].get(), "Top Margin") or \
+               not self._validate_numeric(widgets['bmargin'].get(), "Bottom Margin"): return None
+        # --- End Validation ---
+
         y1_clauses, y2_clauses = [], []
         for item_id in widgets['tree'].get_children():
             if 'checked' in widgets['tree'].item(item_id, 'tags'):
@@ -214,7 +247,6 @@ class GnuplotApp:
             else: y2_settings += "set autoscale y2\n"
         else: y2_settings = "unset y2tics\nunset y2label\n"
         
-        # <<< MODIFIED: Fixed f-string syntax error by defining the dictionary separately >>>
         if widgets['grid_on'].get():
             color_map = {'Light': 'gray40', 'Medium': 'gray20', 'Dark': 'black'}
             grid_color = color_map.get(widgets['grid_style'].get(), 'black')
@@ -258,10 +290,14 @@ class GnuplotApp:
         terminal_config = {'term': 'pngcairo', 'size': f'{width},{height}', 'output': image_filename}
         gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
         if not gnuplot_script: 
-            plot_label = widgets['plot_label']; plot_label.config(image=''); plot_label.image = None; plot_label.config(text="No visible datasets to plot.")
+            # This now catches both "no visible datasets" and validation failures
             return
+        
         completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
-        if completed_process.returncode != 0: messagebox.showerror("Gnuplot Error", completed_process.stderr); return
+        if completed_process.returncode != 0: 
+            # This will now only show genuine gnuplot errors (e.g., file not found)
+            messagebox.showerror("Gnuplot Error", completed_process.stderr)
+            return
         try:
             img = Image.open(image_filename); photo = ImageTk.PhotoImage(img)
             plot_label = widgets['plot_label']; plot_label.config(text="", image=photo); plot_label.image = photo
@@ -275,7 +311,9 @@ class GnuplotApp:
         if extension not in term_map: messagebox.showerror("Unsupported Format", f"File format '{extension}' is not supported."); return
         terminal_config = {'term': term_map[extension], 'size': '1024,768', 'output': filepath}
         gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
-        if not gnuplot_script: messagebox.showwarning("No Data", "There are no visible datasets to save."); return
+        if not gnuplot_script: 
+            messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
+            return
         completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
         if completed_process.returncode != 0: messagebox.showerror("Gnuplot Error", completed_process.stderr)
         else: messagebox.showinfo("Success", f"Plot saved successfully to:\n{filepath}")
@@ -285,7 +323,9 @@ class GnuplotApp:
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         terminal_config = {'term': 'pngcairo crop', 'size': f'{width},{height}', 'output': image_filename}
         gnuplot_script = self.generate_gnuplot_script(widgets, key, terminal_config)
-        if not gnuplot_script: messagebox.showwarning("No Data", "There are no visible datasets to copy."); return
+        if not gnuplot_script: 
+            messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
+            return
         completed_process = subprocess.run(['gnuplot'], input=gnuplot_script, text=True, capture_output=True)
         if completed_process.returncode != 0: messagebox.showerror("Gnuplot Error", completed_process.stderr); return
         if not os.path.exists(image_filename): messagebox.showerror("Error", "Cropped plot image not found."); return
@@ -362,16 +402,27 @@ class GnuplotApp:
         self.auto_replotting = False
         if self.active_auto_replot_job: self.root.after_cancel(self.active_auto_replot_job); self.active_auto_replot_job = None
         widgets['start_button'].config(state="normal"); widgets['stop_button'].config(state="disabled")
+
     def auto_replot_loop(self, widgets, key):
         if self.auto_replotting:
+            # It's important that plot() is called before the 'after' call,
+            # so that any errors in the plot itself don't prevent the user
+            # from fixing the auto-replot interval.
             self.plot(widgets, key)
-            try: interval = int(widgets['replot_interval'].get()); self.active_auto_replot_job = self.root.after(interval, lambda: self.auto_replot_loop(widgets, key))
-            except ValueError: print("Invalid replot interval."); self.stop_replot(widgets)
+            try: 
+                interval = int(widgets['replot_interval'].get())
+                if interval <= 0:
+                    messagebox.showwarning("Invalid Interval", "Auto-replot interval must be a positive number.")
+                    self.stop_replot(widgets)
+                    return
+                self.active_auto_replot_job = self.root.after(interval, lambda: self.auto_replot_loop(widgets, key))
+            except ValueError: 
+                messagebox.showwarning("Invalid Interval", "Please enter a valid whole number for the auto-replot interval (in ms).")
+                self.stop_replot(widgets)
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = GnuplotApp(root)
     root.mainloop()
-
 
 
