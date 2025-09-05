@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V10.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V11.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -114,7 +114,6 @@ class GnuplotApp:
         widgets = {}
         
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
-        # <<< MODIFIED: Added 'clean' column >>>
         columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
         widgets['tree'] = ttk.Treeview(dataset_frame, columns=columns, show="tree headings", height=4)
         widgets['tree'].heading("#0", text="Show"); widgets['tree'].column("#0", width=40, anchor='center', stretch=False)
@@ -130,9 +129,7 @@ class GnuplotApp:
         widgets['y_axis_select'] = tk.StringVar(value='Y1'); ttk.Label(editor_frame, text="Axis:").grid(row=1, column=4, sticky="e", padx=(10,2)); ttk.Combobox(editor_frame, textvariable=widgets['y_axis_select'], values=['Y1', 'Y2'], width=4).grid(row=1, column=5, sticky="w")
         widgets['plot_style'] = tk.StringVar(value='lines'); ttk.Label(editor_frame, text="Plot Style:").grid(row=2, column=0, sticky="w", pady=2); ttk.Combobox(editor_frame, textvariable=widgets['plot_style'], values=['lines', 'points', 'linespoints', 'dots', 'impulses'], width=15).grid(row=2, column=1, sticky="ew", columnspan=2)
         widgets['plot_title'] = tk.StringVar(); plot_title_entry = ttk.Entry(editor_frame, textvariable=widgets['plot_title'], width=20); plot_title_entry.grid(row=3, column=1, sticky="ew", columnspan=3); plot_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Title:").grid(row=3, column=0, sticky="w", pady=2)
-        
-        # <<< NEW: Checkbox for data cleaning >>>
-        widgets['clean_data'] = tk.BooleanVar(value=True)
+        widgets['clean_data'] = tk.BooleanVar(value=False)
         ttk.Checkbutton(editor_frame, text="Clean Vector Data ( )", variable=widgets['clean_data']).grid(row=3, column=4, sticky="w", columnspan=2)
 
         dataset_actions_frame = ttk.Frame(controls_frame); dataset_actions_frame.pack(fill='x', pady=5)
@@ -206,7 +203,6 @@ class GnuplotApp:
             messagebox.showwarning("Invalid Input", f"Please enter a valid number for '{field_name}'.\nYou entered: '{value_str}'")
             return False
         
-    # <<< MODIFIED: This function now also returns the data to be piped to gnuplot >>>
     def generate_gnuplot_script(self, widgets, key, terminal_config):
         if widgets['x_range_mode'].get() == 'manual':
             if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None, None
@@ -220,49 +216,47 @@ class GnuplotApp:
             if not self._validate_numeric(widgets['lmargin'].get(), "Left Margin") or not self._validate_numeric(widgets['rmargin'].get(), "Right Margin") or not self._validate_numeric(widgets['tmargin'].get(), "Top Margin") or not self._validate_numeric(widgets['bmargin'].get(), "Bottom Margin"): return None, None
 
         y1_clauses, y2_clauses = [], []
-        
-        # <<< NEW: Logic to prepare cleaned data for piping >>>
         data_to_pipe = ""
         cleaned_data_cache = {}
+        visible_datasets = []
 
+        # Store details of visible datasets to process them efficiently
         for item_id in widgets['tree'].get_children():
             if 'checked' in widgets['tree'].item(item_id, 'tags'):
-                values = widgets['tree'].item(item_id, 'values')
-                filepath = widgets['tree'].item(item_id, 'tags')[0]
-                
-                # Check if this dataset needs cleaning
-                if values[6] == 'Yes':
-                    plot_source = "'-'" # Tell gnuplot to read from stdin
-                    # Read and clean the file if not already cached
-                    if filepath not in cleaned_data_cache:
-                        try:
-                            with open(filepath, 'r') as f:
-                                content = f.read()
-                            # Clean the data by removing parentheses
-                            cleaned_content = content.replace('(', ' ').replace(')', ' ')
-                            cleaned_data_cache[filepath] = cleaned_content
-                        except Exception as e:
-                            messagebox.showerror("File Error", f"Could not read or clean file:\n{filepath}\n\nError: {e}")
-                            return None, None
-                else:
-                    plot_source = f"'{filepath}'" # Use the filename directly
+                visible_datasets.append({
+                    'values': widgets['tree'].item(item_id, 'values'),
+                    'filepath': widgets['tree'].item(item_id, 'tags')[0]
+                })
 
-                clause = f"{plot_source} using {values[1]}:{values[2]} with {values[4]} title '{values[5]}'"
-                
-                if values[3] == 'Y2': y2_clauses.append(clause + " axes x1y2")
-                else: y1_clauses.append(clause + " axes x1y1")
+        # First pass: Read and clean data only ONCE per unique file
+        for dataset in visible_datasets:
+            if dataset['values'][6] == 'Yes' and dataset['filepath'] not in cleaned_data_cache:
+                try:
+                    with open(dataset['filepath'], 'r') as f:
+                        content = f.read()
+                    cleaned_content = content.replace('(', ' ').replace(')', ' ')
+                    cleaned_data_cache[dataset['filepath']] = cleaned_content
+                except Exception as e:
+                    messagebox.showerror("File Error", f"Could not read or clean file:\n{dataset['filepath']}\n\nError: {e}")
+                    return None, None
 
-        # After generating clauses, build the final data blob to pipe
-        for clause in y1_clauses + y2_clauses:
-             if "'-'" in clause:
-                filepath = clause.split("'")[2] # This is a bit fragile, relies on our structure
-                # Find the original filepath from a dataset that uses '-'
-                for item_id in widgets['tree'].get_children():
-                    if 'checked' in widgets['tree'].item(item_id, 'tags') and widgets['tree'].item(item_id, 'values')[6] == 'Yes':
-                        original_filepath = widgets['tree'].item(item_id, 'tags')[0]
-                        if original_filepath in cleaned_data_cache:
-                             data_to_pipe += cleaned_data_cache[original_filepath] + "\ne\n"
-                             break # Add data for this plot clause
+        # Second pass: Build plot clauses and the data pipe
+        for dataset in visible_datasets:
+            values = dataset['values']
+            filepath = dataset['filepath']
+            
+            if values[6] == 'Yes':
+                plot_source = "'-'"
+                # Append the cached cleaned data for this dataset to the pipe
+                if filepath in cleaned_data_cache:
+                    data_to_pipe += cleaned_data_cache[filepath] + "\ne\n"
+            else:
+                plot_source = f"'{filepath}'"
+
+            clause = f"{plot_source} using {values[1]}:{values[2]} with {values[4]} title '{values[5]}'"
+            
+            if values[3] == 'Y2': y2_clauses.append(clause + " axes x1y2")
+            else: y1_clauses.append(clause + " axes x1y1")
 
         if not y1_clauses and not y2_clauses: return None, None
         full_plot_command = "plot " + ", ".join(y1_clauses + y2_clauses)
@@ -313,7 +307,6 @@ class GnuplotApp:
         """
         return script, data_to_pipe
 
-    # <<< MODIFIED: Plot function now handles piping data to gnuplot >>>
     def plot(self, widgets, key):
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         image_filename = f"plot_{key}.png"
@@ -322,9 +315,8 @@ class GnuplotApp:
         gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
         
         if not gnuplot_script: 
-            return # Catches validation failures or no visible data
+            return
         
-        # Combine the script and the data for piping
         full_input = gnuplot_script
         if data_to_pipe:
             full_input += "\n" + data_to_pipe
@@ -400,7 +392,6 @@ class GnuplotApp:
         filename = filedialog.askopenfilename(title="Select a data file"); 
         if filename: widgets['filepath'].set(filename); widgets['plot_title'].set(os.path.basename(filename))
         
-    # <<< MODIFIED: Add 'clean_data' state when adding dataset >>>
     def add_dataset(self, widgets, key):
         filepath = widgets['filepath'].get()
         if not filepath: return
@@ -409,7 +400,6 @@ class GnuplotApp:
         widgets['tree'].insert('', 'end', values=values, tags=(filepath, 'checked'), text="☑")
         self.plot(widgets, key)
 
-    # <<< MODIFIED: Add 'clean_data' state when duplicating dataset >>>
     def duplicate_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection()
         if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
@@ -421,7 +411,6 @@ class GnuplotApp:
             self.plot(widgets, key)
         except ValueError: messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
         
-    # <<< MODIFIED: Add 'clean_data' state when updating dataset >>>
     def update_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: return
@@ -440,7 +429,6 @@ class GnuplotApp:
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
 
-    # <<< MODIFIED: Update the 'clean_data' checkbox on selection >>>
     def on_tree_select(self, event, widgets):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: 
