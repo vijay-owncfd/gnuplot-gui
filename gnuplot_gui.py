@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+Filename: gnuplot_gui.py
+Author: G. Vijaya Kumar
+Date: Sep 5, 2025
+Description: A GUI for gnuplot (built to monitor OpenFOAM simulations)
+
+To run: python3 gnuplot_gui.py
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import subprocess
