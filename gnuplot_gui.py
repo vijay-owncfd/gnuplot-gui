@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V14.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V15.1") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -134,18 +134,18 @@ class GnuplotApp:
         widgets['clean_data'] = tk.BooleanVar(value=False)
         widgets['detect_headers'] = tk.BooleanVar(value=True)
         
-        clean_cb = ttk.Checkbutton(options_frame, text="Clean Vector Data ( )", variable=widgets['clean_data'], command=lambda w=widgets: self._on_clean_data_toggle(w))
-        clean_cb.pack(side='left')
+        widgets['clean_cb'] = ttk.Checkbutton(options_frame, text="Clean Vector Data ( )", variable=widgets['clean_data'], command=lambda w=widgets: self._on_clean_data_toggle(w))
+        widgets['clean_cb'].pack(side='left')
         
-        detect_headers_cb = ttk.Checkbutton(options_frame, text="Detect Column Headers", variable=widgets['detect_headers'])
-        detect_headers_cb.pack(side='left', padx=10)
-        widgets['detect_headers_cb'] = detect_headers_cb
+        widgets['detect_headers_cb'] = ttk.Checkbutton(options_frame, text="Detect Column Headers", variable=widgets['detect_headers'])
+        widgets['detect_headers_cb'].pack(side='left', padx=10)
 
         dataset_actions_frame = ttk.Frame(controls_frame); dataset_actions_frame.pack(fill='x', pady=5)
         ttk.Button(dataset_actions_frame, text="Add Dataset", command=lambda w=widgets, k=key: self.add_dataset(w, k)).pack(side='left', padx=5)
         widgets['update_button'] = ttk.Button(dataset_actions_frame, text="Update Selected", state="disabled", command=lambda w=widgets, k=key: self.update_dataset(w, k)); widgets['update_button'].pack(side='left', padx=5)
         widgets['duplicate_button'] = ttk.Button(dataset_actions_frame, text="Duplicate Selected", state="disabled", command=lambda w=widgets, k=key: self.duplicate_dataset(w, k)); widgets['duplicate_button'].pack(side='left', padx=5)
-        widgets['remove_button'] = ttk.Button(dataset_actions_frame, text="Remove Selected", state="disabled", command=lambda w=widgets, k=key: self.remove_dataset(w, k)); widgets['remove_button'].pack(side='left', padx=5)
+        widgets['load_all_button'] = ttk.Button(dataset_actions_frame, text="Load All Columns", state="disabled", command=lambda w=widgets, k=key: self.load_all_columns(w, k)); widgets['load_all_button'].pack(side='left', padx=5)
+        widgets['remove_button'] = ttk.Button(dataset_actions_frame, text="Remove Selected", state="disabled", command=lambda w=widgets, k=key: self.remove_dataset(w, k)); widgets['remove_button'].pack(side='right')
 
         axis_frame = ttk.LabelFrame(controls_frame, text="Axes Settings", padding=10); axis_frame.pack(fill='x', pady=5)
         widgets['xlabel'] = tk.StringVar(); xlabel_entry = ttk.Entry(axis_frame, textvariable=widgets['xlabel'], width=30); xlabel_entry.grid(row=0, column=1, columnspan=5, sticky="ew"); xlabel_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="X-Axis Title:").grid(row=0, column=0, sticky="w", pady=2)
@@ -166,7 +166,7 @@ class GnuplotApp:
         ttk.Label(axis_frame, text="Y2-Axis Range:").grid(row=7, column=0, sticky="w"); widgets['y2_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y2_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y2_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=2, sticky="w"); widgets['y2_min'] = tk.StringVar(); widgets['y2_max'] = tk.StringVar(); widgets['y2_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_min'], width=8, state='disabled'); widgets['y2_min_entry'].grid(row=7, column=3); widgets['y2_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=7, column=4, padx=5); widgets['y2_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_max'], width=8, state='disabled'); widgets['y2_max_entry'].grid(row=7, column=5); widgets['y2_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
         layout_frame = ttk.LabelFrame(controls_frame, text="Plot Layout & Margins", padding=10); layout_frame.pack(fill='x', pady=5)
-        widgets['use_custom_margins'] = tk.BooleanVar(value=False); ttk.Checkbutton(layout_frame, text="Set Custom Margins", variable=widgets['use_custom_margins'], command=lambda w=widgets: self.update_margin_entry_state(w)).grid(row=0, column=0, columnspan=4, sticky='w'); widgets['lmargin'] = tk.StringVar(); widgets['rmargin'] = tk.StringVar(); widgets['tmargin'] = tk.StringVar(); widgets['bmargin'] = tk.StringVar(); lmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['lmargin'], width=7, state='disabled'); lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['lmargin_entry'] = lmargin_spinbox; ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w'); rmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['rmargin'], width=7, state='disabled'); rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['rmargin_entry'] = rmargin_spinbox; ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w'); tmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['tmargin'], width=7, state='disabled'); tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['tmargin_entry'] = tmargin_spinbox; ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w'); bmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['bmargin'], width=7, state='disabled'); bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['bmargin_entry'] = bmargin_spinbox; ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w'); ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10); widgets['lock_aspect_ratio'] = tk.BooleanVar(value=True); ttk.Checkbutton(layout_frame, text="Lock Aspect Ratio:", variable=widgets['lock_aspect_ratio'], command=lambda w=widgets: self.update_aspect_ratio_entry_state(w)).grid(row=4, column=0, columnspan=2, sticky='w'); widgets['aspect_ratio'] = tk.StringVar(value='0.75'); widgets['aspect_ratio_entry'] = ttk.Entry(layout_frame, textvariable=widgets['aspect_ratio'], width=8, state='normal'); widgets['aspect_ratio_entry'].grid(row=4, column=2); widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        widgets['use_custom_margins'] = tk.BooleanVar(value=False); ttk.Checkbutton(layout_frame, text="Set Custom Margins", variable=widgets['use_custom_margins'], command=lambda w=widgets: self.update_margin_entry_state(w)).grid(row=0, column=0, columnspan=4, sticky='w'); widgets['lmargin'] = tk.StringVar(); widgets['rmargin'] = tk.StringVar(); widgets['tmargin'] = tk.StringVar(); widgets['bmargin'] = tk.StringVar(); lmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['lmargin'], width=7, state='disabled'); lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['lmargin_entry'] = lmargin_spinbox; ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w'); rmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['rmargin'], width=7, state='disabled'); rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['rmargin_entry'] = rmargin_spinbox; ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w'); tmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['tmargin'], width=7, state='disabled'); tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['tmargin_entry'] = tmargin_spinbox; ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w'); bmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['bmargin'], width=7, state='disabled'); bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['bmargin_entry'] = bmargin_spinbox; ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w'); ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10); widgets['lock_aspect_ratio'] = tk.BooleanVar(value=True); ttk.Checkbutton(layout_frame, text="Aspect ratio (height / width):", variable=widgets['lock_aspect_ratio'], command=lambda w=widgets: self.update_aspect_ratio_entry_state(w)).grid(row=4, column=0, columnspan=2, sticky='w'); widgets['aspect_ratio'] = tk.StringVar(value='0.75'); widgets['aspect_ratio_entry'] = ttk.Entry(layout_frame, textvariable=widgets['aspect_ratio'], width=8, state='normal'); widgets['aspect_ratio_entry'].grid(row=4, column=2); widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10); ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5); replot_frame = ttk.Frame(controls_frame); replot_frame.pack(fill='x', pady=5); widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5); ttk.Separator(controls_frame).pack(fill='x', pady=10); ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
         
         export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5); ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5); ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
@@ -180,9 +180,12 @@ class GnuplotApp:
         if widgets['clean_data'].get():
             widgets['detect_headers'].set(False)
             widgets['detect_headers_cb'].config(state='disabled')
+            widgets['load_all_button'].config(state='disabled')
         else:
             widgets['detect_headers'].set(True)
             widgets['detect_headers_cb'].config(state='normal')
+            if widgets['tree'].selection():
+                widgets['load_all_button'].config(state='normal')
 
     def on_grid_toggle(self, widgets, key):
         state = 'normal' if widgets['grid_on'].get() else 'disabled'
@@ -420,6 +423,17 @@ class GnuplotApp:
             return None
         return None
 
+    def _get_column_count(self, filepath):
+        try:
+            with open(filepath, 'r') as f:
+                for line in f:
+                    stripped_line = line.strip()
+                    if stripped_line.startswith("# Time"):
+                        return len(stripped_line.lstrip('#').split())
+        except Exception:
+            return 0
+        return 0
+
     def add_dataset(self, widgets, key):
         filepath = widgets['filepath'].get()
         if not filepath: return
@@ -445,8 +459,9 @@ class GnuplotApp:
         selected_item = widgets['tree'].selection()
         if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
         
-        values = list(widgets['tree'].item(selected_item[0], "values"))
-        full_path = widgets['tree'].item(selected_item[0], "tags")[0]
+        selected_item = selected_item[0]
+        values = list(widgets['tree'].item(selected_item, "values"))
+        full_path = widgets['tree'].item(selected_item, "tags")[0]
 
         try:
             original_y_col = int(values[2])
@@ -466,11 +481,61 @@ class GnuplotApp:
             
             values[5] = plot_title_to_set
 
-            widgets['tree'].insert('', 'end', values=tuple(values), tags=(full_path, 'checked'), text="☑")
+            current_tags = widgets['tree'].item(selected_item, 'tags')
+            new_tags = (full_path, 'checked')
+            if 'load_all_group' in current_tags:
+                new_tags += ('load_all_group',)
+
+            widgets['tree'].insert('', 'end', values=tuple(values), tags=new_tags, text="☑")
             self.plot(widgets, key)
 
         except ValueError:
             messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
+
+    def load_all_columns(self, widgets, key):
+        selected_item = widgets['tree'].selection()
+        if not selected_item: 
+            messagebox.showinfo("Info", "Please select a dataset first.")
+            return
+
+        selected_item = selected_item[0]
+        values = list(widgets['tree'].item(selected_item, "values"))
+        full_path = widgets['tree'].item(selected_item, "tags")[0]
+
+        total_cols = self._get_column_count(full_path)
+        if total_cols <= 2:
+            messagebox.showinfo("Info", "Not enough columns detected in the file to load more datasets.")
+            return
+        
+        try:
+            start_y_col = int(values[2])
+        except ValueError:
+            messagebox.showerror("Error", f"The starting Y-column '{values[2]}' is not a valid number.")
+            return
+
+        widgets['load_all_button'].config(state='disabled')
+        widgets['clean_cb'].config(state='disabled')
+        
+        widgets['tree'].item(selected_item, tags=(full_path, 'checked', 'load_all_group'))
+
+        for new_y_col in range(start_y_col + 1, total_cols + 1):
+            new_values = list(values)
+            new_values[2] = str(new_y_col)
+
+            plot_title_to_set = ""
+            if widgets['detect_headers'].get():
+                header_title = self._get_column_header(full_path, new_y_col)
+                if header_title:
+                    plot_title_to_set = header_title
+            
+            if not plot_title_to_set:
+                base_title = new_values[5].split(' (col')[0]
+                plot_title_to_set = f"{base_title} (col {new_y_col})"
+            
+            new_values[5] = plot_title_to_set
+            widgets['tree'].insert('', 'end', values=tuple(new_values), tags=(full_path, 'checked', 'load_all_group'), text="☑")
+
+        self.plot(widgets, key)
         
     def update_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection(); 
@@ -491,33 +556,53 @@ class GnuplotApp:
 
         clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
         values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), plot_title_to_set, clean_state)
-        current_tags = widgets['tree'].item(selected_item, 'tags'); visibility_tag = 'checked' if 'checked' in current_tags else 'unchecked'
-        widgets['tree'].item(selected_item, values=values, tags=(filepath, visibility_tag))
-        widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
+        current_tags = list(widgets['tree'].item(selected_item, 'tags'))
+        
+        if 'load_all_group' in current_tags:
+            tags_to_set = (filepath, 'checked' if 'checked' in current_tags else 'unchecked', 'load_all_group')
+        else:
+            tags_to_set = (filepath, 'checked' if 'checked' in current_tags else 'unchecked')
+
+        widgets['tree'].item(selected_item, values=values, tags=tags_to_set)
+        widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
         self.plot(widgets, key)
 
     def remove_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection()
         if selected_item: 
             widgets['tree'].delete(selected_item)
-            widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
+            widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
 
     def on_tree_select(self, event, widgets):
-        selected_item = widgets['tree'].selection(); 
-        if not selected_item: 
-            widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
+        selected_items = widgets['tree'].selection()
+        if not selected_items: 
+            widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             return
+
         widgets['update_button'].config(state='normal'); widgets['duplicate_button'].config(state='normal'); widgets['remove_button'].config(state='normal')
+        
+        selected_item = selected_items[0]
         values = widgets['tree'].item(selected_item, "values"); full_path = widgets['tree'].item(selected_item, "tags")[0]
+        tags = widgets['tree'].item(selected_item, "tags")
+
         widgets['filepath'].set(full_path); widgets['x_col'].set(values[1]); widgets['y_col'].set(values[2]); widgets['y_axis_select'].set(values[3]); widgets['plot_style'].set(values[4]); widgets['plot_title'].set(values[5])
         
-        widgets['clean_data'].set(True if values[6] == 'Yes' else False)
-        
-        if widgets['clean_data'].get():
-            widgets['detect_headers_cb'].config(state='disabled')
+        is_clean = (values[6] == 'Yes')
+        widgets['clean_data'].set(is_clean)
+
+        is_part_of_load_all = 'load_all_group' in tags
+
+        if is_clean or is_part_of_load_all:
+            widgets['load_all_button'].config(state='disabled')
         else:
-            widgets['detect_headers_cb'].config(state='normal')
+            widgets['load_all_button'].config(state='normal')
+            
+        if is_part_of_load_all:
+            widgets['clean_cb'].config(state='disabled')
+        else:
+            widgets['clean_cb'].config(state='normal')
+            self._on_clean_data_toggle(widgets)
         
     def start_replot(self, widgets, key):
         self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
