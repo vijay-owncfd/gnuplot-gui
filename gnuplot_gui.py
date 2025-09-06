@@ -2,7 +2,7 @@
 """
 Filename: gnuplot_gui.py
 Author: G. Vijaya Kumar
-Date: Sep 5, 2025
+Date: Sep 6, 2025
 Description: A GUI for gnuplot (built to monitor OpenFOAM simulations)
 
 To run: python3 gnuplot_gui.py
@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V13.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V14.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -502,7 +502,7 @@ class GnuplotApp:
             widgets['tree'].delete(selected_item)
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
-        
+
     def on_tree_select(self, event, widgets):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: 
@@ -511,17 +511,14 @@ class GnuplotApp:
         widgets['update_button'].config(state='normal'); widgets['duplicate_button'].config(state='normal'); widgets['remove_button'].config(state='normal')
         values = widgets['tree'].item(selected_item, "values"); full_path = widgets['tree'].item(selected_item, "tags")[0]
         widgets['filepath'].set(full_path); widgets['x_col'].set(values[1]); widgets['y_col'].set(values[2]); widgets['y_axis_select'].set(values[3]); widgets['plot_style'].set(values[4]); widgets['plot_title'].set(values[5])
-
-        # Set the 'Clean Data' checkbox based on the selected dataset
+        
         widgets['clean_data'].set(True if values[6] == 'Yes' else False)
-
-        # Now, ONLY update the enabled/disabled state of the 'Detect Headers' checkbox,
-        # without changing its checked/unchecked value. Its value will now persist.
+        
         if widgets['clean_data'].get():
             widgets['detect_headers_cb'].config(state='disabled')
         else:
             widgets['detect_headers_cb'].config(state='normal')
-
+        
     def start_replot(self, widgets, key):
         self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
     def stop_replot(self, widgets):
