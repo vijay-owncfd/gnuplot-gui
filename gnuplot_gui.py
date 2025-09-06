@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V16.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V17.1") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -113,14 +113,22 @@ class GnuplotApp:
         paned_window.add(plot_frame, weight=2)
         widgets = {}
         
-        # <<< NEW: Data format frame for separator >>>
-        data_format_frame = ttk.LabelFrame(controls_frame, text="Data Format (for all datasets in this tab)", padding=10)
-        data_format_frame.pack(fill='x', pady=5)
-        ttk.Label(data_format_frame, text="Separator:").grid(row=0, column=0, sticky='w')
+        # <<< MODIFIED: Combined Data Format and Global Title into one frame to save space >>>
+        global_settings_frame = ttk.LabelFrame(controls_frame, text="Global Plot & Data Settings", padding=10)
+        global_settings_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(global_settings_frame, text="Separator:").grid(row=0, column=0, sticky='w', pady=(0, 2))
         widgets['separator'] = tk.StringVar(value='whitespace')
-        separator_combo = ttk.Combobox(data_format_frame, textvariable=widgets['separator'], values=['whitespace', ','], width=12)
-        separator_combo.grid(row=0, column=1, sticky='w')
+        separator_combo = ttk.Combobox(global_settings_frame, textvariable=widgets['separator'], values=['whitespace', ','], width=12)
+        separator_combo.grid(row=0, column=1, sticky='w', pady=(0, 2))
         separator_combo.bind("<<ComboboxSelected>>", lambda event, w=widgets: self._on_separator_change(w))
+
+        ttk.Label(global_settings_frame, text="Plot Title:").grid(row=1, column=0, sticky='w')
+        widgets['plot_global_title'] = tk.StringVar()
+        plot_global_title_entry = ttk.Entry(global_settings_frame, textvariable=widgets['plot_global_title'])
+        plot_global_title_entry.grid(row=1, column=1, sticky='ew')
+        global_settings_frame.columnconfigure(1, weight=1) # Allow entry to expand
+        plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
         columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
@@ -250,7 +258,6 @@ class GnuplotApp:
             if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None, None
         # ... (rest of validation checks)
 
-        # <<< MODIFIED: Handle separator and autotitle logic >>>
         separator = widgets['separator'].get()
         detect_headers = widgets['detect_headers'].get()
         
@@ -263,6 +270,10 @@ class GnuplotApp:
             if detect_headers:
                 key_settings = 'set key autotitle columnheader'
                 use_explicit_titles = False
+        
+        # <<< MODIFIED: Handle global plot title >>>
+        global_title = widgets['plot_global_title'].get()
+        title_settings = f'set title "{global_title}"' if global_title else 'unset title'
         
         y1_clauses, y2_clauses = [], []
         data_to_pipe = ""
@@ -342,6 +353,7 @@ class GnuplotApp:
             set output '{terminal_config['output']}'
             {separator_settings}
             {key_settings}
+            {title_settings}
             {margin_settings}
             {aspect_ratio_settings}
             set xlabel "{widgets['xlabel'].get()}"
@@ -358,7 +370,6 @@ class GnuplotApp:
         return script, data_to_pipe
 
     def plot(self, widgets, key):
-        # ... (plot function remains the same)
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         image_filename = f"plot_{key}.png"
         terminal_config = {'term': 'pngcairo', 'size': f'{width},{height}', 'output': image_filename}
@@ -382,8 +393,6 @@ class GnuplotApp:
             plot_label = widgets['plot_label']; plot_label.config(text="", image=photo); plot_label.image = photo
         except Exception as e: messagebox.showerror("Image Error", f"An error occurred while loading the plot image:\n{e}")
 
-
-    # ... (save_plot and copy_plot_to_clipboard remain the same)
     def save_plot(self, widgets, key):
         filepath = filedialog.asksaveasfilename(title="Save Plot As...", filetypes=(("PNG Image", "*.png"), ("SVG Vector Image", "*.svg"), ("PDF Document", "*.pdf"), ("Encapsulated PostScript", "*.eps")), defaultextension=".png")
         if not filepath: return
@@ -446,7 +455,6 @@ class GnuplotApp:
         if filename: widgets['filepath'].set(filename); widgets['plot_title'].set(os.path.basename(filename))
         
     def _get_column_header(self, filepath, y_col_index):
-        # ... (this function remains the same)
         try:
             with open(filepath, 'r') as f:
                 for line in f:
@@ -461,9 +469,7 @@ class GnuplotApp:
             return None
         return None
 
-
     def _get_column_count(self, filepath):
-        # ... (this function remains the same)
         try:
             with open(filepath, 'r') as f:
                 for line in f:
@@ -474,14 +480,12 @@ class GnuplotApp:
             return 0
         return 0
 
-
     def add_dataset(self, widgets, key):
         filepath = widgets['filepath'].get()
         if not filepath: return
         
         plot_title_to_set = widgets['plot_title'].get()
 
-        # <<< MODIFIED: Only do Python-based header detection for whitespace files >>>
         if widgets['detect_headers'].get() and widgets['separator'].get() == 'whitespace':
             try:
                 y_col = int(widgets['y_col'].get())
@@ -498,7 +502,6 @@ class GnuplotApp:
         self.plot(widgets, key)
 
     def duplicate_dataset(self, widgets, key):
-        # ... (duplicate_dataset remains the same)
         selected_item = widgets['tree'].selection()
         if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
         
@@ -535,9 +538,7 @@ class GnuplotApp:
         except ValueError:
             messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
 
-
     def load_all_columns(self, widgets, key):
-        # ... (load_all_columns remains the same)
         selected_item = widgets['tree'].selection()
         if not selected_item: 
             messagebox.showinfo("Info", "Please select a dataset first.")
@@ -581,7 +582,6 @@ class GnuplotApp:
             widgets['tree'].insert('', 'end', values=tuple(new_values), tags=(full_path, 'checked', 'load_all_group'), text="☑")
 
         self.plot(widgets, key)
-
         
     def update_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection(); 
@@ -614,16 +614,13 @@ class GnuplotApp:
         self.plot(widgets, key)
 
     def remove_dataset(self, widgets, key):
-        # ... (remove_dataset remains the same)
         selected_item = widgets['tree'].selection()
         if selected_item: 
             widgets['tree'].delete(selected_item)
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
 
-
     def on_tree_select(self, event, widgets):
-        # ... (on_tree_select remains the same)
         selected_items = widgets['tree'].selection()
         if not selected_items: 
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
@@ -652,7 +649,6 @@ class GnuplotApp:
         else:
             widgets['clean_cb'].config(state='normal')
             self._on_clean_data_toggle(widgets)
-
         
     def start_replot(self, widgets, key):
         self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
