@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V11.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V13.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -129,8 +129,17 @@ class GnuplotApp:
         widgets['y_axis_select'] = tk.StringVar(value='Y1'); ttk.Label(editor_frame, text="Axis:").grid(row=1, column=4, sticky="e", padx=(10,2)); ttk.Combobox(editor_frame, textvariable=widgets['y_axis_select'], values=['Y1', 'Y2'], width=4).grid(row=1, column=5, sticky="w")
         widgets['plot_style'] = tk.StringVar(value='lines'); ttk.Label(editor_frame, text="Plot Style:").grid(row=2, column=0, sticky="w", pady=2); ttk.Combobox(editor_frame, textvariable=widgets['plot_style'], values=['lines', 'points', 'linespoints', 'dots', 'impulses'], width=15).grid(row=2, column=1, sticky="ew", columnspan=2)
         widgets['plot_title'] = tk.StringVar(); plot_title_entry = ttk.Entry(editor_frame, textvariable=widgets['plot_title'], width=20); plot_title_entry.grid(row=3, column=1, sticky="ew", columnspan=3); plot_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Title:").grid(row=3, column=0, sticky="w", pady=2)
+        
+        options_frame = ttk.Frame(editor_frame); options_frame.grid(row=4, column=0, columnspan=6, sticky='w', pady=5)
         widgets['clean_data'] = tk.BooleanVar(value=False)
-        ttk.Checkbutton(editor_frame, text="Clean Vector Data ( )", variable=widgets['clean_data']).grid(row=3, column=4, sticky="w", columnspan=2)
+        widgets['detect_headers'] = tk.BooleanVar(value=True)
+        
+        clean_cb = ttk.Checkbutton(options_frame, text="Clean Vector Data ( )", variable=widgets['clean_data'], command=lambda w=widgets: self._on_clean_data_toggle(w))
+        clean_cb.pack(side='left')
+        
+        detect_headers_cb = ttk.Checkbutton(options_frame, text="Detect Column Headers", variable=widgets['detect_headers'])
+        detect_headers_cb.pack(side='left', padx=10)
+        widgets['detect_headers_cb'] = detect_headers_cb
 
         dataset_actions_frame = ttk.Frame(controls_frame); dataset_actions_frame.pack(fill='x', pady=5)
         ttk.Button(dataset_actions_frame, text="Add Dataset", command=lambda w=widgets, k=key: self.add_dataset(w, k)).pack(side='left', padx=5)
@@ -166,6 +175,14 @@ class GnuplotApp:
         plot_frame.bind("<Configure>", lambda event, k=key: self.on_plot_resize(event, k))
         self.tabs[key] = tab_data
         return tab_frame
+
+    def _on_clean_data_toggle(self, widgets):
+        if widgets['clean_data'].get():
+            widgets['detect_headers'].set(False)
+            widgets['detect_headers_cb'].config(state='disabled')
+        else:
+            widgets['detect_headers'].set(True)
+            widgets['detect_headers_cb'].config(state='normal')
 
     def on_grid_toggle(self, widgets, key):
         state = 'normal' if widgets['grid_on'].get() else 'disabled'
@@ -220,7 +237,6 @@ class GnuplotApp:
         cleaned_data_cache = {}
         visible_datasets = []
 
-        # Store details of visible datasets to process them efficiently
         for item_id in widgets['tree'].get_children():
             if 'checked' in widgets['tree'].item(item_id, 'tags'):
                 visible_datasets.append({
@@ -228,7 +244,6 @@ class GnuplotApp:
                     'filepath': widgets['tree'].item(item_id, 'tags')[0]
                 })
 
-        # First pass: Read and clean data only ONCE per unique file
         for dataset in visible_datasets:
             if dataset['values'][6] == 'Yes' and dataset['filepath'] not in cleaned_data_cache:
                 try:
@@ -240,14 +255,12 @@ class GnuplotApp:
                     messagebox.showerror("File Error", f"Could not read or clean file:\n{dataset['filepath']}\n\nError: {e}")
                     return None, None
 
-        # Second pass: Build plot clauses and the data pipe
         for dataset in visible_datasets:
             values = dataset['values']
             filepath = dataset['filepath']
             
             if values[6] == 'Yes':
                 plot_source = "'-'"
-                # Append the cached cleaned data for this dataset to the pipe
                 if filepath in cleaned_data_cache:
                     data_to_pipe += cleaned_data_cache[filepath] + "\ne\n"
             else:
@@ -270,8 +283,8 @@ class GnuplotApp:
         else: y2_settings = "unset y2tics\nunset y2label\n"
         
         if widgets['grid_on'].get():
-            color_map = {'Light': 'gray80', 'Medium': 'gray60', 'Dark': 'gray40'}
-            grid_color = color_map.get(widgets['grid_style'].get(), 'gray60')
+            color_map = {'Light': 'gray40', 'Medium': 'gray20', 'Dark': 'gray0'}
+            grid_color = color_map.get(widgets['grid_style'].get(), 'gray20')
             grid_settings = f'set grid back linetype 0 linecolor "{grid_color}"'
         else:
             grid_settings = 'unset grid'
@@ -392,31 +405,92 @@ class GnuplotApp:
         filename = filedialog.askopenfilename(title="Select a data file"); 
         if filename: widgets['filepath'].set(filename); widgets['plot_title'].set(os.path.basename(filename))
         
+    def _get_column_header(self, filepath, y_col_index):
+        try:
+            with open(filepath, 'r') as f:
+                for line in f:
+                    stripped_line = line.strip()
+                    if stripped_line.startswith("# Time"):
+                        headers = stripped_line.lstrip('#').split()
+                        if 0 < y_col_index <= len(headers):
+                            return headers[y_col_index - 1]
+                        else:
+                            return None
+        except Exception:
+            return None
+        return None
+
     def add_dataset(self, widgets, key):
         filepath = widgets['filepath'].get()
         if not filepath: return
+        
+        plot_title_to_set = widgets['plot_title'].get()
+
+        if widgets['detect_headers'].get():
+            try:
+                y_col = int(widgets['y_col'].get())
+                header_title = self._get_column_header(filepath, y_col)
+                if header_title:
+                    plot_title_to_set = header_title
+                    widgets['plot_title'].set(header_title)
+            except (ValueError, FileNotFoundError):
+                pass
+
         clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
-        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get(), clean_state)
+        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), plot_title_to_set, clean_state)
         widgets['tree'].insert('', 'end', values=values, tags=(filepath, 'checked'), text="☑")
         self.plot(widgets, key)
 
     def duplicate_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection()
         if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
-        values = list(widgets['tree'].item(selected_item[0], "values")); full_path = widgets['tree'].item(selected_item[0], "tags")[0]
+        
+        values = list(widgets['tree'].item(selected_item[0], "values"))
+        full_path = widgets['tree'].item(selected_item[0], "tags")[0]
+
         try:
-            original_y_col = int(values[2]); new_y_col = original_y_col + 1; values[2] = str(new_y_col)
-            original_title = values[5]; base_title = original_title.split(' (col')[0]; values[5] = f"{base_title} (col {new_y_col})"
+            original_y_col = int(values[2])
+            new_y_col = original_y_col + 1
+            values[2] = str(new_y_col)
+
+            plot_title_to_set = ""
+            if widgets['detect_headers'].get():
+                header_title = self._get_column_header(full_path, new_y_col)
+                if header_title:
+                    plot_title_to_set = header_title
+            
+            if not plot_title_to_set:
+                original_title = values[5]
+                base_title = original_title.split(' (col')[0]
+                plot_title_to_set = f"{base_title} (col {new_y_col})"
+            
+            values[5] = plot_title_to_set
+
             widgets['tree'].insert('', 'end', values=tuple(values), tags=(full_path, 'checked'), text="☑")
             self.plot(widgets, key)
-        except ValueError: messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
+
+        except ValueError:
+            messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
         
     def update_dataset(self, widgets, key):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: return
         filepath = widgets['filepath'].get()
+
+        plot_title_to_set = widgets['plot_title'].get()
+
+        if widgets['detect_headers'].get():
+            try:
+                y_col = int(widgets['y_col'].get())
+                header_title = self._get_column_header(filepath, y_col)
+                if header_title:
+                    plot_title_to_set = header_title
+                    widgets['plot_title'].set(header_title)
+            except (ValueError, FileNotFoundError):
+                pass
+
         clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
-        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), widgets['plot_title'].get(), clean_state)
+        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), plot_title_to_set, clean_state)
         current_tags = widgets['tree'].item(selected_item, 'tags'); visibility_tag = 'checked' if 'checked' in current_tags else 'unchecked'
         widgets['tree'].item(selected_item, values=values, tags=(filepath, visibility_tag))
         widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
@@ -428,7 +502,7 @@ class GnuplotApp:
             widgets['tree'].delete(selected_item)
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
             self.plot(widgets, key)
-
+        
     def on_tree_select(self, event, widgets):
         selected_item = widgets['tree'].selection(); 
         if not selected_item: 
@@ -437,8 +511,17 @@ class GnuplotApp:
         widgets['update_button'].config(state='normal'); widgets['duplicate_button'].config(state='normal'); widgets['remove_button'].config(state='normal')
         values = widgets['tree'].item(selected_item, "values"); full_path = widgets['tree'].item(selected_item, "tags")[0]
         widgets['filepath'].set(full_path); widgets['x_col'].set(values[1]); widgets['y_col'].set(values[2]); widgets['y_axis_select'].set(values[3]); widgets['plot_style'].set(values[4]); widgets['plot_title'].set(values[5])
+
+        # Set the 'Clean Data' checkbox based on the selected dataset
         widgets['clean_data'].set(True if values[6] == 'Yes' else False)
-        
+
+        # Now, ONLY update the enabled/disabled state of the 'Detect Headers' checkbox,
+        # without changing its checked/unchecked value. Its value will now persist.
+        if widgets['clean_data'].get():
+            widgets['detect_headers_cb'].config(state='disabled')
+        else:
+            widgets['detect_headers_cb'].config(state='normal')
+
     def start_replot(self, widgets, key):
         self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
     def stop_replot(self, widgets):
