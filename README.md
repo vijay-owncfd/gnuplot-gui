@@ -26,4 +26,3 @@
 - Allows standard gnuplot syntax for mathematical operations. e.g., 1:(-$3)
 - Adjust plot size through custom margins and aspect ratio
 - Customize font sizes for chart title, axes titles, axes labels, and legends
-
