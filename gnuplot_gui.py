@@ -2,7 +2,7 @@
 """
 Filename: gnuplot_gui.py
 Author: G. Vijaya Kumar
-Date: Sep 6, 2025
+Date: Sep 7, 2025
 Description: A GUI for gnuplot (built to monitor OpenFOAM simulations)
 
 To run: python3 gnuplot_gui.py
@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V17.1") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V17.4") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -107,13 +107,52 @@ class GnuplotApp:
         tab_frame = ttk.Frame(self.notebook)
         paned_window = ttk.PanedWindow(tab_frame, orient='horizontal')
         paned_window.pack(expand=True, fill='both')
-        controls_frame = ttk.Frame(paned_window, padding="10")
-        paned_window.add(controls_frame, weight=1)
+
+        scroll_container = ttk.Frame(paned_window)
+        paned_window.add(scroll_container, weight=1)
+
+        canvas = tk.Canvas(scroll_container)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        controls_frame = ttk.Frame(canvas, padding="10")
+        canvas_frame_id = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+        
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas_frame_id, width=event.width)
+
+        controls_frame.bind("<Configure>", on_frame_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+        
+        def _on_mousewheel(event):
+            if platform.system() == 'Windows':
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            elif platform.system() == 'Darwin':
+                canvas.yview_scroll(int(-1*event.delta), "units")
+            else:
+                if event.num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5:
+                    canvas.yview_scroll(1, "units")
+
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind('<Enter>', _bind_mousewheel)
+        canvas.bind('<Leave>', _unbind_mousewheel)
+        
         plot_frame = ttk.Frame(paned_window, padding="10")
         paned_window.add(plot_frame, weight=2)
         widgets = {}
         
-        # <<< MODIFIED: Combined Data Format and Global Title into one frame to save space >>>
         global_settings_frame = ttk.LabelFrame(controls_frame, text="Global Plot & Data Settings", padding=10)
         global_settings_frame.pack(fill='x', pady=5)
         
@@ -127,7 +166,7 @@ class GnuplotApp:
         widgets['plot_global_title'] = tk.StringVar()
         plot_global_title_entry = ttk.Entry(global_settings_frame, textvariable=widgets['plot_global_title'])
         plot_global_title_entry.grid(row=1, column=1, sticky='ew')
-        global_settings_frame.columnconfigure(1, weight=1) # Allow entry to expand
+        global_settings_frame.columnconfigure(1, weight=1)
         plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
@@ -182,8 +221,50 @@ class GnuplotApp:
         ttk.Label(axis_frame, text="Y1-Axis Range:").grid(row=6, column=0, sticky="w"); widgets['y_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=2, sticky="w"); widgets['y_min'] = tk.StringVar(); widgets['y_max'] = tk.StringVar(); widgets['y_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_min'], width=8, state='disabled'); widgets['y_min_entry'].grid(row=6, column=3); widgets['y_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=6, column=4, padx=5); widgets['y_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_max'], width=8, state='disabled'); widgets['y_max_entry'].grid(row=6, column=5); widgets['y_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         ttk.Label(axis_frame, text="Y2-Axis Range:").grid(row=7, column=0, sticky="w"); widgets['y2_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y2_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y2_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=2, sticky="w"); widgets['y2_min'] = tk.StringVar(); widgets['y2_max'] = tk.StringVar(); widgets['y2_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_min'], width=8, state='disabled'); widgets['y2_min_entry'].grid(row=7, column=3); widgets['y2_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=7, column=4, padx=5); widgets['y2_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_max'], width=8, state='disabled'); widgets['y2_max_entry'].grid(row=7, column=5); widgets['y2_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
-        layout_frame = ttk.LabelFrame(controls_frame, text="Plot Layout & Margins", padding=10); layout_frame.pack(fill='x', pady=5)
-        widgets['use_custom_margins'] = tk.BooleanVar(value=False); ttk.Checkbutton(layout_frame, text="Set Custom Margins", variable=widgets['use_custom_margins'], command=lambda w=widgets: self.update_margin_entry_state(w)).grid(row=0, column=0, columnspan=4, sticky='w'); widgets['lmargin'] = tk.StringVar(); widgets['rmargin'] = tk.StringVar(); widgets['tmargin'] = tk.StringVar(); widgets['bmargin'] = tk.StringVar(); lmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['lmargin'], width=7, state='disabled'); lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['lmargin_entry'] = lmargin_spinbox; ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w'); rmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['rmargin'], width=7, state='disabled'); rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['rmargin_entry'] = rmargin_spinbox; ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w'); tmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['tmargin'], width=7, state='disabled'); tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['tmargin_entry'] = tmargin_spinbox; ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w'); bmargin_spinbox = ttk.Spinbox(layout_frame, from_=-1000, to=1000, increment=10, textvariable=widgets['bmargin'], width=7, state='disabled'); bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); widgets['bmargin_entry'] = bmargin_spinbox; ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w'); ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10); widgets['lock_aspect_ratio'] = tk.BooleanVar(value=True); ttk.Checkbutton(layout_frame, text="Aspect ratio (height / width):", variable=widgets['lock_aspect_ratio'], command=lambda w=widgets: self.update_aspect_ratio_entry_state(w)).grid(row=4, column=0, columnspan=2, sticky='w'); widgets['aspect_ratio'] = tk.StringVar(value='0.75'); widgets['aspect_ratio_entry'] = ttk.Entry(layout_frame, textvariable=widgets['aspect_ratio'], width=8, state='normal'); widgets['aspect_ratio_entry'].grid(row=4, column=2); widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        layout_frame = ttk.LabelFrame(controls_frame, text="Plot Layout & Margins", padding=10)
+        layout_frame.pack(fill='x', pady=5)
+        widgets['use_custom_margins'] = tk.BooleanVar(value=False)
+        ttk.Checkbutton(layout_frame, text="Set Custom Margins", variable=widgets['use_custom_margins'], command=lambda w=widgets: self.update_margin_entry_state(w)).grid(row=0, column=0, columnspan=4, sticky='w')
+        
+        widgets['lmargin'] = tk.StringVar(value='10')
+        widgets['rmargin'] = tk.StringVar(value='2')
+        widgets['tmargin'] = tk.StringVar(value='2')
+        widgets['bmargin'] = tk.StringVar(value='5')
+        
+        plot_cmd = lambda: self.plot(widgets, key)
+
+        lmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['lmargin'], width=7, state='disabled', command=plot_cmd)
+        lmargin_spinbox.grid(row=1, column=1)
+        lmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
+        widgets['lmargin_entry'] = lmargin_spinbox
+        ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w')
+
+        rmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['rmargin'], width=7, state='disabled', command=plot_cmd)
+        rmargin_spinbox.grid(row=1, column=3)
+        rmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
+        widgets['rmargin_entry'] = rmargin_spinbox
+        ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w')
+
+        tmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['tmargin'], width=7, state='disabled', command=plot_cmd)
+        tmargin_spinbox.grid(row=2, column=1)
+        tmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
+        widgets['tmargin_entry'] = tmargin_spinbox
+        ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w')
+
+        bmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['bmargin'], width=7, state='disabled', command=plot_cmd)
+        bmargin_spinbox.grid(row=2, column=3)
+        bmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
+        widgets['bmargin_entry'] = bmargin_spinbox
+        ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w')
+        
+        ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10)
+        widgets['lock_aspect_ratio'] = tk.BooleanVar(value=True)
+        ttk.Checkbutton(layout_frame, text="Aspect ratio (height / width):", variable=widgets['lock_aspect_ratio'], command=lambda w=widgets: self.update_aspect_ratio_entry_state(w)).grid(row=4, column=0, columnspan=2, sticky='w')
+        widgets['aspect_ratio'] = tk.StringVar(value='0.75')
+        widgets['aspect_ratio_entry'] = ttk.Entry(layout_frame, textvariable=widgets['aspect_ratio'], width=8, state='normal')
+        widgets['aspect_ratio_entry'].grid(row=4, column=2)
+        widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        
         main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10); ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5); replot_frame = ttk.Frame(controls_frame); replot_frame.pack(fill='x', pady=5); widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5); ttk.Separator(controls_frame).pack(fill='x', pady=10); ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
         
         export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5); ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5); ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
@@ -251,12 +332,36 @@ class GnuplotApp:
         except ValueError:
             messagebox.showwarning("Invalid Input", f"Please enter a valid number for '{field_name}'.\nYou entered: '{value_str}'")
             return False
-        
+    
+    def _validate_positive_integer(self, value_str, field_name):
+        if not value_str.strip(): return True
+        try:
+            val = int(value_str)
+            if val < 0:
+                messagebox.showwarning("Invalid Input", f"'{field_name}' must be a positive number or zero.\nYou entered: '{value_str}'")
+                return False
+            return True
+        except ValueError:
+            messagebox.showwarning("Invalid Input", f"Please enter a valid whole number for '{field_name}'.\nYou entered: '{value_str}'")
+            return False
+
     def generate_gnuplot_script(self, widgets, key, terminal_config):
         # Validation checks
         if widgets['x_range_mode'].get() == 'manual':
             if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None, None
-        # ... (rest of validation checks)
+        if widgets['y_range_mode'].get() == 'manual':
+            if not self._validate_numeric(widgets['y_min'].get(), "Y1-Axis Min") or not self._validate_numeric(widgets['y_max'].get(), "Y1-Axis Max"): return None, None
+        if widgets['y2_range_mode'].get() == 'manual':
+            if not self._validate_numeric(widgets['y2_min'].get(), "Y2-Axis Min") or not self._validate_numeric(widgets['y2_max'].get(), "Y2-Axis Max"): return None, None
+        if widgets['lock_aspect_ratio'].get():
+            if not self._validate_numeric(widgets['aspect_ratio'].get(), "Aspect Ratio"): return None, None
+        
+        if widgets['use_custom_margins'].get():
+            if not self._validate_positive_integer(widgets['lmargin'].get(), "Left Margin") or \
+               not self._validate_positive_integer(widgets['rmargin'].get(), "Right Margin") or \
+               not self._validate_positive_integer(widgets['tmargin'].get(), "Top Margin") or \
+               not self._validate_positive_integer(widgets['bmargin'].get(), "Bottom Margin"):
+                return None, None
 
         separator = widgets['separator'].get()
         detect_headers = widgets['detect_headers'].get()
@@ -271,7 +376,6 @@ class GnuplotApp:
                 key_settings = 'set key autotitle columnheader'
                 use_explicit_titles = False
         
-        # <<< MODIFIED: Handle global plot title >>>
         global_title = widgets['plot_global_title'].get()
         title_settings = f'set title "{global_title}"' if global_title else 'unset title'
         
