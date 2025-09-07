@@ -14,13 +14,14 @@ import subprocess
 import time
 from PIL import Image, ImageTk
 import platform 
-import os       
+import os
+import json
 
 # --- Main Application Class ---
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V17.4") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V18.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -28,17 +29,25 @@ class GnuplotApp:
         
         self.tabs = {}
         self.tab_counter = 0
-        self.right_clicked_tab_id = None # Store which tab was right-clicked
+        self.right_clicked_tab_id = None
+
+        # <<< NEW: Add a main menu for File operations >>>
+        self.menu_bar = tk.Menu(self.root)
+        self.file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.file_menu.add_command(label="Load Session...", command=self.load_session)
+        self.file_menu.add_command(label="Save Session As...", command=self.save_session)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Exit", command=self.root.quit)
+        self.menu_bar.add_cascade(label="File", menu=self.file_menu)
+        self.root.config(menu=self.menu_bar)
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
-        # Create right-click menu for tabs and bind it
         self.tab_menu = tk.Menu(self.root, tearoff=0)
         self.tab_menu.add_command(label="Rename Tab", command=self.rename_tab_popup)
         self.notebook.bind("<Button-3>", self.show_tab_menu)
 
-        # Start with one tab and the '+' tab
         self.tab_counter += 1
         first_title = f"Plot {self.tab_counter}"
         first_key = f"tab{self.tab_counter}"
@@ -88,6 +97,7 @@ class GnuplotApp:
         plus_tab_index = self.notebook.index('end') - 1
         self.notebook.insert(plus_tab_index, new_tab_frame, text=title)
         self.notebook.select(plus_tab_index)
+        return key
 
     def close_tab(self, key):
         if len(self.notebook.tabs()) <= 2:
@@ -121,31 +131,20 @@ class GnuplotApp:
         controls_frame = ttk.Frame(canvas, padding="10")
         canvas_frame_id = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
         
-        def on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            canvas.itemconfig(canvas_frame_id, width=event.width)
-
+        def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
+        def on_canvas_configure(event): canvas.itemconfig(canvas_frame_id, width=event.width)
         controls_frame.bind("<Configure>", on_frame_configure)
         canvas.bind("<Configure>", on_canvas_configure)
         
         def _on_mousewheel(event):
-            if platform.system() == 'Windows':
-                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-            elif platform.system() == 'Darwin':
-                canvas.yview_scroll(int(-1*event.delta), "units")
+            if platform.system() == 'Windows': canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            elif platform.system() == 'Darwin': canvas.yview_scroll(int(-1*event.delta), "units")
             else:
-                if event.num == 4:
-                    canvas.yview_scroll(-1, "units")
-                elif event.num == 5:
-                    canvas.yview_scroll(1, "units")
+                if event.num == 4: canvas.yview_scroll(-1, "units")
+                elif event.num == 5: canvas.yview_scroll(1, "units")
 
-        def _bind_mousewheel(event):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        def _unbind_mousewheel(event):
-            canvas.unbind_all("<MouseWheel>")
-
+        def _bind_mousewheel(event): canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_mousewheel(event): canvas.unbind_all("<MouseWheel>")
         canvas.bind('<Enter>', _bind_mousewheel)
         canvas.bind('<Leave>', _unbind_mousewheel)
         
@@ -774,6 +773,112 @@ class GnuplotApp:
             except ValueError: 
                 messagebox.showwarning("Invalid Interval", "Please enter a valid whole number for the auto-replot interval (in ms).")
                 self.stop_replot(widgets)
+
+    # <<< NEW: Save Session Logic >>>
+    def save_session(self):
+        filepath = filedialog.asksaveasfilename(
+            title="Save Session As...",
+            filetypes=(("Gnuplot GUI Session", "*.json"), ("All files", "*.*")),
+            defaultextension=".json")
+        if not filepath:
+            return
+
+        session_data = {'tabs': []}
+        
+        for tab_id in self.notebook.tabs():
+            if self.notebook.tab(tab_id, "text") == '+':
+                continue
+
+            # Find the internal key for this tab
+            key_found = None
+            for k, v in self.tabs.items():
+                if str(v['frame']) == str(tab_id):
+                    key_found = k
+                    break
+            if not key_found:
+                continue
+            
+            widgets = self.tabs[key_found]['widgets']
+            tab_data = {'tab_title': self.notebook.tab(tab_id, 'text'), 'settings': {}, 'datasets': []}
+
+            # Save all widget states
+            for widget_key, var in widgets.items():
+                if isinstance(var, (tk.StringVar, tk.BooleanVar)):
+                    tab_data['settings'][widget_key] = var.get()
+
+            # Save datasets from the tree
+            for item_id in widgets['tree'].get_children():
+                item = widgets['tree'].item(item_id)
+                dataset_info = {
+                    'values': item['values'],
+                    'tags': item['tags'],
+                    'visible': 'checked' in item['tags']
+                }
+                tab_data['datasets'].append(dataset_info)
+            
+            session_data['tabs'].append(tab_data)
+
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(session_data, f, indent=4)
+            messagebox.showinfo("Success", f"Session saved to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save session file.\nError: {e}")
+
+    # <<< NEW: Load Session Logic >>>
+    def load_session(self):
+        filepath = filedialog.askopenfilename(
+            title="Load Session",
+            filetypes=(("Gnuplot GUI Session", "*.json"), ("All files", "*.*")))
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, 'r') as f:
+                session_data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load or parse session file.\nError: {e}")
+            return
+            
+        # Clear existing tabs
+        for tab_id in self.notebook.tabs():
+            if self.notebook.tab(tab_id, "text") != '+':
+                self.notebook.forget(tab_id)
+        self.tabs.clear()
+        self.tab_counter = 0
+
+        if not session_data.get('tabs'):
+             self.add_new_tab() # Start with one if the file is empty/invalid
+             return
+
+        # Recreate tabs from session data
+        for i, tab_data in enumerate(session_data['tabs']):
+            new_key = self.add_new_tab()
+            widgets = self.tabs[new_key]['widgets']
+            
+            self.notebook.tab(i, text=tab_data.get('tab_title', f"Plot {i+1}"))
+            
+            # Restore widget settings
+            settings = tab_data.get('settings', {})
+            for key, value in settings.items():
+                if key in widgets and isinstance(widgets[key], (tk.StringVar, tk.BooleanVar)):
+                    widgets[key].set(value)
+            
+            # Restore datasets
+            datasets = tab_data.get('datasets', [])
+            for ds in datasets:
+                tags = tuple(ds.get('tags', []))
+                text = "☑" if ds.get('visible', True) else "☐"
+                widgets['tree'].insert('', 'end', values=ds.get('values', []), tags=tags, text=text)
+
+            # Update UI states and plot
+            self._on_separator_change(widgets)
+            self.update_range_entry_state(widgets)
+            self.update_margin_entry_state(widgets)
+            self.update_aspect_ratio_entry_state(widgets)
+            self.plot(widgets, new_key)
+
+        self.notebook.select(0)
 
 if __name__ == "__main__":
     root = tk.Tk()
