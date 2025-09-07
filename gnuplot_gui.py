@@ -21,7 +21,7 @@ import json
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V18.1") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V18.2") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -40,7 +40,6 @@ class GnuplotApp:
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
         self.root.config(menu=self.menu_bar)
 
-        # <<< NEW: Intercept window close event >>>
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
         self.notebook = ttk.Notebook(root)
@@ -61,16 +60,14 @@ class GnuplotApp:
         
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
-    # <<< NEW: Function to handle the save prompt on exit >>>
     def _on_closing(self):
         response = messagebox.askyesnocancel("Quit", "Do you want to save your session before quitting?")
         
-        if response is True:  # Yes
+        if response is True:
             if self.save_session():
                 self.root.destroy()
-        elif response is False:  # No
+        elif response is False:
             self.root.destroy()
-        # If response is None (Cancel), do nothing.
 
     def show_tab_menu(self, event):
         try:
@@ -281,7 +278,16 @@ class GnuplotApp:
         
         export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5); ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5); ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
         widgets['plot_label'] = ttk.Label(plot_frame, text="Plot will appear here...", anchor='center'); widgets['plot_label'].pack(expand=True, fill='both')
-        tab_data = {'widgets': widgets, 'plot_width': 600, 'plot_height': 400, 'resize_job': None, 'frame': tab_frame}
+        
+        # <<< MODIFIED: Store the paned_window for saving/loading sash position >>>
+        tab_data = {
+            'widgets': widgets, 
+            'plot_width': 600, 
+            'plot_height': 400, 
+            'resize_job': None, 
+            'frame': tab_frame,
+            'paned_window': paned_window
+        }
         plot_frame.bind("<Configure>", lambda event, k=key: self.on_plot_resize(event, k))
         self.tabs[key] = tab_data
         return tab_frame
@@ -810,7 +816,13 @@ class GnuplotApp:
                 continue
             
             widgets = self.tabs[key_found]['widgets']
-            tab_data = {'tab_title': self.notebook.tab(tab_id, 'text'), 'settings': {}, 'datasets': []}
+            paned_window = self.tabs[key_found]['paned_window']
+            tab_data = {
+                'tab_title': self.notebook.tab(tab_id, 'text'), 
+                'sash_position': paned_window.sashpos(0),
+                'settings': {}, 
+                'datasets': []
+            }
 
             for widget_key, var in widgets.items():
                 if isinstance(var, (tk.StringVar, tk.BooleanVar)):
@@ -863,6 +875,7 @@ class GnuplotApp:
         for i, tab_data in enumerate(session_data['tabs']):
             new_key = self.add_new_tab()
             widgets = self.tabs[new_key]['widgets']
+            paned_window = self.tabs[new_key]['paned_window']
             
             self.notebook.tab(i, text=tab_data.get('tab_title', f"Plot {i+1}"))
             
@@ -882,6 +895,11 @@ class GnuplotApp:
             self.update_margin_entry_state(widgets)
             self.update_aspect_ratio_entry_state(widgets)
             self.plot(widgets, new_key)
+            
+            sash_pos = tab_data.get('sash_position')
+            if sash_pos:
+                self.root.update_idletasks()
+                paned_window.sashpos(0, sash_pos)
 
         self.notebook.select(0)
 
