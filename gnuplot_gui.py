@@ -21,7 +21,7 @@ import json
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V18.2") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V18.3") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -89,6 +89,8 @@ class GnuplotApp:
         entry = ttk.Entry(popup, textvariable=new_name_var)
         entry.pack(padx=10, fill='x'); entry.focus()
         entry.bind("<Return>", lambda e: on_ok())
+        entry.bind("<Escape>", lambda e: popup.destroy()) # Bind Escape to the entry widget
+        popup.bind("<Escape>", lambda e: popup.destroy())
 
         def on_ok():
             new_name = new_name_var.get().strip()
@@ -279,7 +281,6 @@ class GnuplotApp:
         export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5); ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5); ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
         widgets['plot_label'] = ttk.Label(plot_frame, text="Plot will appear here...", anchor='center'); widgets['plot_label'].pack(expand=True, fill='both')
         
-        # <<< MODIFIED: Store the paned_window for saving/loading sash position >>>
         tab_data = {
             'widgets': widgets, 
             'plot_width': 600, 
