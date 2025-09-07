@@ -2,6 +2,8 @@
 - A python-tkinter based GUI interface for gnuplot
 - Primarily developed to plot/monitor OpenFOAM simulation outputs
 
+![My App Screenshot](./attachments/gnuplot_gui_interface.png)
+
 # Dependencies
 
 - Built for Python 3.10.12 (can work for newer versions, but check)
