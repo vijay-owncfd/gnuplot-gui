@@ -2,7 +2,7 @@
 """
 Filename: gnuplot_gui.py
 Author: G. Vijaya Kumar
-Date: Sep 6, 2025
+Date: Sep 7, 2025
 Description: A GUI for gnuplot (built to monitor OpenFOAM simulations)
 
 To run: python3 gnuplot_gui.py
@@ -20,7 +20,7 @@ import os
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V17.1") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V17.2") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -107,13 +107,60 @@ class GnuplotApp:
         tab_frame = ttk.Frame(self.notebook)
         paned_window = ttk.PanedWindow(tab_frame, orient='horizontal')
         paned_window.pack(expand=True, fill='both')
-        controls_frame = ttk.Frame(paned_window, padding="10")
-        paned_window.add(controls_frame, weight=1)
+
+        # <<< MODIFIED: Create a scrollable area for the controls >>>
+        # 1. Container for canvas and scrollbar, added to the paned window
+        scroll_container = ttk.Frame(paned_window)
+        paned_window.add(scroll_container, weight=1)
+
+        # 2. Canvas and Scrollbar
+        canvas = tk.Canvas(scroll_container)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # 3. The frame that will hold all the widgets (this is the one that gets scrolled)
+        controls_frame = ttk.Frame(canvas, padding="10")
+
+        # 4. Add the controls frame to the canvas
+        canvas_frame_id = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+        
+        # 5. Link sizing and scrolling behavior
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas_frame_id, width=event.width)
+
+        controls_frame.bind("<Configure>", on_frame_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+        
+        def _on_mousewheel(event):
+            if platform.system() == 'Windows':
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            elif platform.system() == 'Darwin':
+                canvas.yview_scroll(int(-1*event.delta), "units")
+            else:
+                if event.num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5:
+                    canvas.yview_scroll(1, "units")
+
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind('<Enter>', _bind_mousewheel)
+        canvas.bind('<Leave>', _unbind_mousewheel)
+        
+        # Plot frame remains the same
         plot_frame = ttk.Frame(paned_window, padding="10")
         paned_window.add(plot_frame, weight=2)
         widgets = {}
         
-        # <<< MODIFIED: Combined Data Format and Global Title into one frame to save space >>>
         global_settings_frame = ttk.LabelFrame(controls_frame, text="Global Plot & Data Settings", padding=10)
         global_settings_frame.pack(fill='x', pady=5)
         
@@ -127,7 +174,7 @@ class GnuplotApp:
         widgets['plot_global_title'] = tk.StringVar()
         plot_global_title_entry = ttk.Entry(global_settings_frame, textvariable=widgets['plot_global_title'])
         plot_global_title_entry.grid(row=1, column=1, sticky='ew')
-        global_settings_frame.columnconfigure(1, weight=1) # Allow entry to expand
+        global_settings_frame.columnconfigure(1, weight=1)
         plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
@@ -271,7 +318,6 @@ class GnuplotApp:
                 key_settings = 'set key autotitle columnheader'
                 use_explicit_titles = False
         
-        # <<< MODIFIED: Handle global plot title >>>
         global_title = widgets['plot_global_title'].get()
         title_settings = f'set title "{global_title}"' if global_title else 'unset title'
         
