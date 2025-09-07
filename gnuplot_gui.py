@@ -21,7 +21,7 @@ import json
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V18.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V18.1") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -31,15 +31,17 @@ class GnuplotApp:
         self.tab_counter = 0
         self.right_clicked_tab_id = None
 
-        # <<< NEW: Add a main menu for File operations >>>
         self.menu_bar = tk.Menu(self.root)
         self.file_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.file_menu.add_command(label="Load Session...", command=self.load_session)
         self.file_menu.add_command(label="Save Session As...", command=self.save_session)
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.root.quit)
+        self.file_menu.add_command(label="Exit", command=self._on_closing)
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
         self.root.config(menu=self.menu_bar)
+
+        # <<< NEW: Intercept window close event >>>
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
@@ -58,6 +60,17 @@ class GnuplotApp:
         self.notebook.add(self.plus_tab_frame, text='+')
         
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+
+    # <<< NEW: Function to handle the save prompt on exit >>>
+    def _on_closing(self):
+        response = messagebox.askyesnocancel("Quit", "Do you want to save your session before quitting?")
+        
+        if response is True:  # Yes
+            if self.save_session():
+                self.root.destroy()
+        elif response is False:  # No
+            self.root.destroy()
+        # If response is None (Cancel), do nothing.
 
     def show_tab_menu(self, event):
         try:
@@ -774,22 +787,20 @@ class GnuplotApp:
                 messagebox.showwarning("Invalid Interval", "Please enter a valid whole number for the auto-replot interval (in ms).")
                 self.stop_replot(widgets)
 
-    # <<< NEW: Save Session Logic >>>
     def save_session(self):
         filepath = filedialog.asksaveasfilename(
             title="Save Session As...",
             filetypes=(("Gnuplot GUI Session", "*.json"), ("All files", "*.*")),
             defaultextension=".json")
         if not filepath:
-            return
+            return False
 
         session_data = {'tabs': []}
         
         for tab_id in self.notebook.tabs():
             if self.notebook.tab(tab_id, "text") == '+':
                 continue
-
-            # Find the internal key for this tab
+            
             key_found = None
             for k, v in self.tabs.items():
                 if str(v['frame']) == str(tab_id):
@@ -801,12 +812,10 @@ class GnuplotApp:
             widgets = self.tabs[key_found]['widgets']
             tab_data = {'tab_title': self.notebook.tab(tab_id, 'text'), 'settings': {}, 'datasets': []}
 
-            # Save all widget states
             for widget_key, var in widgets.items():
                 if isinstance(var, (tk.StringVar, tk.BooleanVar)):
                     tab_data['settings'][widget_key] = var.get()
 
-            # Save datasets from the tree
             for item_id in widgets['tree'].get_children():
                 item = widgets['tree'].item(item_id)
                 dataset_info = {
@@ -822,10 +831,11 @@ class GnuplotApp:
             with open(filepath, 'w') as f:
                 json.dump(session_data, f, indent=4)
             messagebox.showinfo("Success", f"Session saved to:\n{filepath}")
+            return True
         except Exception as e:
             messagebox.showerror("Save Error", f"Failed to save session file.\nError: {e}")
+            return False
 
-    # <<< NEW: Load Session Logic >>>
     def load_session(self):
         filepath = filedialog.askopenfilename(
             title="Load Session",
@@ -840,7 +850,6 @@ class GnuplotApp:
             messagebox.showerror("Load Error", f"Failed to load or parse session file.\nError: {e}")
             return
             
-        # Clear existing tabs
         for tab_id in self.notebook.tabs():
             if self.notebook.tab(tab_id, "text") != '+':
                 self.notebook.forget(tab_id)
@@ -848,30 +857,26 @@ class GnuplotApp:
         self.tab_counter = 0
 
         if not session_data.get('tabs'):
-             self.add_new_tab() # Start with one if the file is empty/invalid
+             self.add_new_tab()
              return
 
-        # Recreate tabs from session data
         for i, tab_data in enumerate(session_data['tabs']):
             new_key = self.add_new_tab()
             widgets = self.tabs[new_key]['widgets']
             
             self.notebook.tab(i, text=tab_data.get('tab_title', f"Plot {i+1}"))
             
-            # Restore widget settings
             settings = tab_data.get('settings', {})
             for key, value in settings.items():
                 if key in widgets and isinstance(widgets[key], (tk.StringVar, tk.BooleanVar)):
                     widgets[key].set(value)
             
-            # Restore datasets
             datasets = tab_data.get('datasets', [])
             for ds in datasets:
                 tags = tuple(ds.get('tags', []))
                 text = "☑" if ds.get('visible', True) else "☐"
                 widgets['tree'].insert('', 'end', values=ds.get('values', []), tags=tags, text=text)
 
-            # Update UI states and plot
             self._on_separator_change(widgets)
             self.update_range_entry_state(widgets)
             self.update_margin_entry_state(widgets)
