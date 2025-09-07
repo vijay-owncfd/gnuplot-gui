@@ -21,7 +21,7 @@ import json
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V18.3") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V19.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -89,7 +89,7 @@ class GnuplotApp:
         entry = ttk.Entry(popup, textvariable=new_name_var)
         entry.pack(padx=10, fill='x'); entry.focus()
         entry.bind("<Return>", lambda e: on_ok())
-        entry.bind("<Escape>", lambda e: popup.destroy()) # Bind Escape to the entry widget
+        entry.bind("<Escape>", lambda e: popup.destroy())
         popup.bind("<Escape>", lambda e: popup.destroy())
 
         def on_ok():
@@ -179,6 +179,24 @@ class GnuplotApp:
         plot_global_title_entry.grid(row=1, column=1, sticky='ew')
         global_settings_frame.columnconfigure(1, weight=1)
         plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        
+        # <<< NEW: Font size controls >>>
+        font_frame = ttk.LabelFrame(controls_frame, text="Font Sizes", padding=10)
+        font_frame.pack(fill='x', pady=5)
+        plot_cmd = lambda: self.plot(widgets, key)
+
+        ttk.Label(font_frame, text="Title:").grid(row=0, column=0, sticky='w')
+        widgets['title_font_size'] = tk.StringVar(value='14')
+        ttk.Spinbox(font_frame, from_=8, to=36, increment=1, textvariable=widgets['title_font_size'], width=5, command=plot_cmd).grid(row=0, column=1, sticky='w')
+        
+        ttk.Label(font_frame, text="Axes:").grid(row=0, column=2, sticky='w', padx=(10, 0))
+        widgets['axes_font_size'] = tk.StringVar(value='12')
+        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['axes_font_size'], width=5, command=plot_cmd).grid(row=0, column=3, sticky='w')
+
+        ttk.Label(font_frame, text="Legend:").grid(row=0, column=4, sticky='w', padx=(10, 0))
+        widgets['legend_font_size'] = tk.StringVar(value='12')
+        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['legend_font_size'], width=5, command=plot_cmd).grid(row=0, column=5, sticky='w')
+
 
         dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
         columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
@@ -366,6 +384,10 @@ class GnuplotApp:
 
     def generate_gnuplot_script(self, widgets, key, terminal_config):
         # Validation checks
+        if not self._validate_positive_integer(widgets['title_font_size'].get(), "Title Font Size") or \
+           not self._validate_positive_integer(widgets['axes_font_size'].get(), "Axes Font Size") or \
+           not self._validate_positive_integer(widgets['legend_font_size'].get(), "Legend Font Size"):
+            return None, None
         if widgets['x_range_mode'].get() == 'manual':
             if not self._validate_numeric(widgets['x_min'].get(), "X-Axis Min") or not self._validate_numeric(widgets['x_max'].get(), "X-Axis Max"): return None, None
         if widgets['y_range_mode'].get() == 'manual':
@@ -386,17 +408,20 @@ class GnuplotApp:
         detect_headers = widgets['detect_headers'].get()
         
         separator_settings = ""
-        key_settings = ""
+        key_settings = f"set key font ',{widgets['legend_font_size'].get()}'"
         use_explicit_titles = True
 
         if separator == ',':
             separator_settings = 'set datafile separator ","'
             if detect_headers:
-                key_settings = 'set key autotitle columnheader'
+                key_settings += '\nset key autotitle columnheader'
                 use_explicit_titles = False
         
         global_title = widgets['plot_global_title'].get()
-        title_settings = f'set title "{global_title}"' if global_title else 'unset title'
+        title_font = widgets['title_font_size'].get()
+        title_settings = f'set title "{global_title}" font ",{title_font}"' if global_title else 'unset title'
+        
+        axes_font = widgets['axes_font_size'].get()
         
         y1_clauses, y2_clauses = [], []
         data_to_pipe = ""
@@ -443,7 +468,8 @@ class GnuplotApp:
         y2_settings = ""
         if y2_clauses:
             y2_settings += "set ytics nomirror\nset y2tics\n"
-            y2_settings += f'set y2label "{widgets["y2label"].get()}"\n'
+            y2_settings += f'set y2label "{widgets["y2label"].get()}" font ",{axes_font}"\n'
+            y2_settings += f'set y2tics font ",{axes_font}"\n'
             y2_settings += ("set logscale y2\n" if widgets['y2_log'].get() else "unset logscale y2\n")
             if widgets['y2_range_mode'].get() == 'manual' and widgets['y2_min'].get() and widgets['y2_max'].get(): y2_settings += f"set y2range [{widgets['y2_min'].get()}:{widgets['y2_max'].get()}]\n"
             else: y2_settings += "set autoscale y2\n"
@@ -479,8 +505,10 @@ class GnuplotApp:
             {title_settings}
             {margin_settings}
             {aspect_ratio_settings}
-            set xlabel "{widgets['xlabel'].get()}"
-            set ylabel "{widgets['ylabel'].get()}"
+            set xlabel "{widgets['xlabel'].get()}" font ",{axes_font}"
+            set ylabel "{widgets['ylabel'].get()}" font ",{axes_font}"
+            set xtics font ",{axes_font}"
+            set ytics font ",{axes_font}"
             {log_settings}
             {grid_settings}
             {range_settings}
