@@ -104,7 +104,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V20.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V21.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -419,8 +419,33 @@ class GnuplotApp:
         ttk.Button(logfile_selection_frame, text="Parse Logfile", command=lambda w=widgets, k=key: self._parse_logfile(w, k)).grid(row=1, column=1, pady=5)
         logfile_selection_frame.columnconfigure(1, weight=1)
 
+        # Logfile Layout & Grid
+        logfile_layout_frame = ttk.LabelFrame(logfile_frame, text="Layout, Margins & Grid", padding=10)
+        logfile_layout_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(logfile_layout_frame, text="Margins (L, R, B, T):").grid(row=0, column=0, sticky='w', pady=2)
+        widgets['logfile_lmargin'] = tk.StringVar(value='0.1')
+        widgets['logfile_rmargin'] = tk.StringVar(value='0.9')
+        widgets['logfile_bmargin'] = tk.StringVar(value='0.1')
+        widgets['logfile_tmargin'] = tk.StringVar(value='0.9')
+        
+        margin_spin_l = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_lmargin'], width=5)
+        margin_spin_l.grid(row=0, column=1, padx=2)
+        margin_spin_r = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_rmargin'], width=5)
+        margin_spin_r.grid(row=0, column=2, padx=2)
+        margin_spin_b = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_bmargin'], width=5)
+        margin_spin_b.grid(row=0, column=3, padx=2)
+        margin_spin_t = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_tmargin'], width=5)
+        margin_spin_t.grid(row=0, column=4, padx=2)
+
+        ttk.Label(logfile_layout_frame, text="Grid:").grid(row=1, column=0, sticky='w', pady=2)
+        widgets['logfile_grid_on'] = tk.BooleanVar(value=True)
+        widgets['logfile_grid_style'] = tk.StringVar(value='Medium')
+        ttk.Checkbutton(logfile_layout_frame, text="On", variable=widgets['logfile_grid_on']).grid(row=1, column=1, sticky='w')
+        ttk.Combobox(logfile_layout_frame, textvariable=widgets['logfile_grid_style'], values=['Light', 'Medium', 'Dark'], width=8).grid(row=1, column=2, columnspan=2, sticky='w')
+
         subplot_config_frame = ttk.LabelFrame(logfile_frame, text="Sub-plot Configuration", padding=10)
-        subplot_config_frame.pack(fill='x', pady=5)
+        subplot_config_frame.pack(fill='x', pady=5, expand=True)
         
         widgets['subplot_vars'] = []
         for i in range(4):
@@ -434,19 +459,31 @@ class GnuplotApp:
 
             ttk.Label(sub_frame, text=f"Sub-plot {i+1} ({title})", font='-weight bold').pack(anchor='w')
             
-            # Title Entry
-            title_var = tk.StringVar()
-            ttk.Label(sub_frame, text="Title:").pack(anchor='w', pady=(5,0))
-            ttk.Entry(sub_frame, textvariable=title_var).pack(fill='x')
+            # Y-Axis Label
+            y_label_var = tk.StringVar()
+            ttk.Label(sub_frame, text="Y-Axis Label:").pack(anchor='w', pady=(5,0))
+            ttk.Entry(sub_frame, textvariable=y_label_var).pack(fill='x')
             
-            # Y-Column Combobox
-            y_col_var = tk.StringVar()
-            ttk.Label(sub_frame, text="Y-Axis Column:").pack(anchor='w', pady=(5,0))
-            combo = ttk.Combobox(sub_frame, textvariable=y_col_var, state='readonly')
-            combo.pack(fill='x')
-            
-            widgets['subplot_vars'].append({'title': title_var, 'y_col': y_col_var, 'combo': combo})
+            # Y Log Scale
+            y_log_var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(sub_frame, text="Y Log Scale", variable=y_log_var).pack(anchor='w')
 
+            # Y-Column Listbox
+            ttk.Label(sub_frame, text="Y-Axis Columns:").pack(anchor='w', pady=(5,0))
+            list_frame = ttk.Frame(sub_frame)
+            list_frame.pack(fill='both', expand=True)
+            listbox = tk.Listbox(list_frame, selectmode='multiple', height=5, exportselection=False)
+            listbox.pack(side='left', fill='both', expand=True)
+            list_scroll = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
+            list_scroll.pack(side='right', fill='y')
+            listbox.config(yscrollcommand=list_scroll.set)
+
+            widgets['subplot_vars'].append({
+                'y_label': y_label_var, 
+                'y_log': y_log_var, 
+                'listbox': listbox
+            })
+            
         # --- COMMON WIDGETS (Actions, Plot Display) ---
         main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10)
         ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5)
@@ -507,10 +544,12 @@ class GnuplotApp:
         
         tab_data['logfile_columns'] = list(df.columns)
         
-        # Populate comboboxes
+        # Populate listboxes
         for i in range(4):
-            combo = widgets['subplot_vars'][i]['combo']
-            combo['values'] = tab_data['logfile_columns']
+            listbox = widgets['subplot_vars'][i]['listbox']
+            listbox.delete(0, 'end') # Clear previous entries
+            for col in tab_data['logfile_columns']:
+                listbox.insert('end', col)
 
         messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
 
@@ -590,39 +629,66 @@ class GnuplotApp:
         temp_file = tab_data.get('temp_file_path')
         if not temp_file or not os.path.exists(temp_file):
             messagebox.showwarning("No Data", "Please parse a logfile before plotting.")
-            return None
+            return None, None
 
+        # Validate margins
+        margins = [
+            widgets['logfile_lmargin'].get(), widgets['logfile_rmargin'].get(),
+            widgets['logfile_bmargin'].get(), widgets['logfile_tmargin'].get()
+        ]
+        for m in margins:
+            if not self._validate_numeric(m, "Margin"): return None, None
+
+        margin_cmd = f"margins {margins[0]}, {margins[1]}, {margins[2]}, {margins[3]}"
+        
         script = f"""
             set terminal {terminal_config['term']} size {terminal_config['size']} enhanced font 'Verdana,10'
             set output '{terminal_config['output']}'
             set datafile separator ","
-            set multiplot layout 2,2 title "Logfile Analysis"
+            set multiplot layout 2,2 {margin_cmd}
         """
         
-        plot_commands = []
+        if widgets['logfile_grid_on'].get():
+            color_map = {'Light': 'gray80', 'Medium': 'gray50', 'Dark': 'gray20'}
+            grid_color = color_map.get(widgets['logfile_grid_style'].get(), 'gray50')
+            script += f'set grid back linetype 0 linecolor "{grid_color}"\n'
+        else:
+            script += 'unset grid\n'
+
         has_plot = False
         for i in range(4):
             sub_plot_vars = widgets['subplot_vars'][i]
-            y_col = sub_plot_vars['y_col'].get()
-            title = sub_plot_vars['title'].get()
+            listbox = sub_plot_vars['listbox']
+            selected_indices = listbox.curselection()
             
-            if y_col:
+            y_label = sub_plot_vars['y_label'].get()
+            y_log = sub_plot_vars['y_log'].get()
+
+            script += f'\n# Subplot {i+1}\n'
+            script += f'set xlabel "Time"\n'
+            script += f'set ylabel "{y_label}"\n'
+            if y_log: script += 'set logscale y\n'
+            
+            if selected_indices:
                 has_plot = True
-                script += f"""
-                    set title "{title if title else y_col}"
-                    set xlabel "Time"
-                    set ylabel "{y_col}"
-                    plot '{temp_file}' using "Time":"{y_col}" with lines notitle
-                """
+                plot_clauses = []
+                for index in selected_indices:
+                    col_name = listbox.get(index)
+                    # Gnuplot needs quotes around column names with special characters
+                    plot_clauses.append(f"'{temp_file}' using \"Time\":\"{col_name}\" with lines title \"{col_name}\"")
+                
+                script += "plot " + ", ".join(plot_clauses) + "\n"
             else: # Empty plot
-                script += "set title ''; unset xlabel; unset ylabel; plot [0:1][0:1] -1 with lines notitle\n"
+                script += "plot [0:1][0:1] -1 with lines notitle\n"
+
+            if y_log: script += 'unset logscale y\n' # Reset for next plot
 
         if not has_plot:
             messagebox.showinfo("Info", "No columns selected for plotting in any sub-plot.")
-            return None
+            return None, None
 
-        script += "\nunset multiplot\n"
-        return script, None # No data to pipe for logfile mode
+        script += "\nunset multiplot\nunset grid\n"
+        return script, None
 
     def generate_gnuplot_script(self, widgets, key, terminal_config):
         # Validation checks
@@ -1118,8 +1184,15 @@ class GnuplotApp:
                 'datasets': [],
                 'logfile_settings': {
                     'path': widgets['logfile_path'].get(),
-                    'subplot_titles': [v['title'].get() for v in widgets['subplot_vars']],
-                    'subplot_y_cols': [v['y_col'].get() for v in widgets['subplot_vars']],
+                    'subplot_y_labels': [v['y_label'].get() for v in widgets['subplot_vars']],
+                    'subplot_y_logs': [v['y_log'].get() for v in widgets['subplot_vars']],
+                    'subplot_selections': [v['listbox'].curselection() for v in widgets['subplot_vars']],
+                    'margins': [
+                        widgets['logfile_lmargin'].get(), widgets['logfile_rmargin'].get(),
+                        widgets['logfile_bmargin'].get(), widgets['logfile_tmargin'].get()
+                    ],
+                    'grid_on': widgets['logfile_grid_on'].get(),
+                    'grid_style': widgets['logfile_grid_style'].get()
                 }
             }
             
@@ -1195,14 +1268,30 @@ class GnuplotApp:
             logfile_settings = tab_data.get('logfile_settings', {})
             if logfile_settings:
                 widgets['logfile_path'].set(logfile_settings.get('path', ''))
-                subplot_titles = logfile_settings.get('subplot_titles', [])
-                subplot_y_cols = logfile_settings.get('subplot_y_cols', [])
+                
+                # Restore labels and logs
+                subplot_y_labels = logfile_settings.get('subplot_y_labels', [])
+                subplot_y_logs = logfile_settings.get('subplot_y_logs', [])
                 for j in range(4):
-                    if j < len(subplot_titles): widgets['subplot_vars'][j]['title'].set(subplot_titles[j])
-                    if j < len(subplot_y_cols): widgets['subplot_vars'][j]['y_col'].set(subplot_y_cols[j])
-                # If a logfile was loaded, re-parse it to populate comboboxes
+                    if j < len(subplot_y_labels): widgets['subplot_vars'][j]['y_label'].set(subplot_y_labels[j])
+                    if j < len(subplot_y_logs): widgets['subplot_vars'][j]['y_log'].set(subplot_y_logs[j])
+
+                # Restore margins and grid
+                margins = logfile_settings.get('margins', ['0.1', '0.9', '0.1', '0.9'])
+                widgets['logfile_lmargin'].set(margins[0]); widgets['logfile_rmargin'].set(margins[1])
+                widgets['logfile_bmargin'].set(margins[2]); widgets['logfile_tmargin'].set(margins[3])
+                widgets['logfile_grid_on'].set(logfile_settings.get('grid_on', True))
+                widgets['logfile_grid_style'].set(logfile_settings.get('grid_style', 'Medium'))
+                
+                # Re-parse file and then apply selections
                 if widgets['logfile_path'].get():
                     self._parse_logfile(widgets, new_key)
+                    # Restore selections
+                    subplot_selections = logfile_settings.get('subplot_selections', [])
+                    for j, sel in enumerate(subplot_selections):
+                        if j < 4:
+                            for index in sel:
+                                widgets['subplot_vars'][j]['listbox'].selection_set(index)
 
             # Restore mode and UI view
             mode = tab_data.get('mode', "Normal")
