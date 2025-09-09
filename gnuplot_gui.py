@@ -16,12 +16,95 @@ from PIL import Image, ImageTk
 import platform 
 import os
 import json
+import re
+import pandas as pd
+from tempfile import NamedTemporaryFile
+
+# --- Logfile Parser Class ---
+class LogfileParser:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        # Regex to find the main time steps
+        self.time_re = re.compile(r"^\s*Time = (\S+)\s*$")
+        # Regex for solver residuals
+        self.solver_re = re.compile(
+            r"Solving for (\S+), Initial residual = (\S+), Final residual = (\S+), No Iterations\s+(\d+)"
+        )
+        # Regex for functionObjects with a single scalar value
+        self.fo_scalar_re = re.compile(r"^\s*(\S+)\s*=\s*(\S+)\s*$")
+        # Regex for functionObjects with a vector value in parentheses
+        self.fo_vector_re = re.compile(r"^\s*(\S+)\s*=\s*\(([\d\.\-eE\s]+)\)\s*$")
+
+    def parse(self):
+        records = []
+        current_record = {}
+        
+        try:
+            with open(self.filepath, 'r') as f:
+                for line in f:
+                    # Check for a new time step
+                    time_match = self.time_re.match(line)
+                    if time_match:
+                        if current_record: # Save the previous record if it exists
+                            records.append(current_record)
+                        current_record = {'Time': float(time_match.group(1))}
+                        continue
+
+                    if not current_record: # Skip lines before the first "Time ="
+                        continue
+                        
+                    # Check for solver lines
+                    solver_match = self.solver_re.search(line)
+                    if solver_match:
+                        var, i_res, f_res, iters = solver_match.groups()
+                        current_record[f'{var}_initial_residual'] = float(i_res)
+                        current_record[f'{var}_final_residual'] = float(f_res)
+                        continue # Move to next line after match
+                    
+                    # Check for function object lines (vector or scalar)
+                    line_stripped = line.strip()
+                    vector_match = self.fo_vector_re.match(line_stripped)
+                    if vector_match:
+                        name, values_str = vector_match.groups()
+                        values = [float(v) for v in values_str.split()]
+                        current_record[f'{name}_x'] = values[0]
+                        if len(values) > 1: current_record[f'{name}_y'] = values[1]
+                        if len(values) > 2: current_record[f'{name}_z'] = values[2]
+                        continue
+
+                    scalar_match = self.fo_scalar_re.match(line_stripped)
+                    if scalar_match:
+                        name, val = scalar_match.groups()
+                        try:
+                            current_record[name] = float(val)
+                        except (ValueError, TypeError):
+                            pass # Ignore if value is not a float
+                        continue
+
+            if current_record: # Append the last record
+                records.append(current_record)
+
+            if not records:
+                return None, "No data could be parsed. Check the logfile format."
+
+            df = pd.DataFrame.from_records(records)
+            df = df.fillna(method='ffill') # Forward fill to handle missing values
+            df = df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
+            
+            if 'Time' not in df.columns or df.empty:
+                 return None, "Parsing resulted in an empty dataset or 'Time' column is missing."
+
+            return df, None
+
+        except Exception as e:
+            return None, f"An error occurred during parsing: {e}"
+
 
 # --- Main Application Class ---
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V19.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V20.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -68,6 +151,14 @@ class GnuplotApp:
                 self.root.destroy()
         elif response is False:
             self.root.destroy()
+        
+        # Clean up temporary files
+        for tab_data in self.tabs.values():
+            if tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
+                try:
+                    os.remove(tab_data['temp_file_path'])
+                except OSError as e:
+                    print(f"Error removing temporary file: {e}")
 
     def show_tab_menu(self, event):
         try:
@@ -115,6 +206,14 @@ class GnuplotApp:
         if len(self.notebook.tabs()) <= 2:
             messagebox.showwarning("Action Blocked", "Cannot close the last plot tab.")
             return
+        
+        tab_data = self.tabs.get(key)
+        if tab_data and tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
+             try:
+                os.remove(tab_data['temp_file_path'])
+             except OSError as e:
+                print(f"Error removing temp file on tab close: {e}")
+
         frame_to_close = self.tabs[key]['frame']
         self.notebook.forget(frame_to_close)
         del self.tabs[key]
@@ -125,6 +224,15 @@ class GnuplotApp:
             if selected_tab_text == '+': self.add_new_tab()
         except tk.TclError: pass
             
+    def _switch_mode(self, widgets):
+        mode = widgets['mode'].get()
+        if mode == "Normal":
+            widgets['logfile_mode_frame'].pack_forget()
+            widgets['normal_mode_frame'].pack(fill='x', expand=True)
+        else: # Plot Logfile
+            widgets['normal_mode_frame'].pack_forget()
+            widgets['logfile_mode_frame'].pack(fill='x', expand=True)
+
     def create_plot_tab(self, title, key):
         tab_frame = ttk.Frame(self.notebook)
         paned_window = ttk.PanedWindow(tab_frame, orient='horizontal')
@@ -164,7 +272,24 @@ class GnuplotApp:
         paned_window.add(plot_frame, weight=2)
         widgets = {}
         
-        global_settings_frame = ttk.LabelFrame(controls_frame, text="Global Plot & Data Settings", padding=10)
+        # --- Mode Selection ---
+        mode_frame = ttk.LabelFrame(controls_frame, text="Mode", padding=10)
+        mode_frame.pack(fill='x', pady=5)
+        widgets['mode'] = tk.StringVar(value="Normal")
+        ttk.Radiobutton(mode_frame, text="Normal", variable=widgets['mode'], value="Normal", command=lambda w=widgets: self._switch_mode(w)).pack(side='left', padx=5)
+        ttk.Radiobutton(mode_frame, text="Plot Logfile", variable=widgets['mode'], value="Plot Logfile", command=lambda w=widgets: self._switch_mode(w)).pack(side='left', padx=5)
+
+        # --- Frame Containers for Modes ---
+        widgets['normal_mode_frame'] = ttk.Frame(controls_frame)
+        widgets['normal_mode_frame'].pack(fill='x', expand=True)
+        
+        widgets['logfile_mode_frame'] = ttk.Frame(controls_frame)
+        # Initially hidden
+        
+        # --- NORMAL MODE WIDGETS ---
+        normal_frame = widgets['normal_mode_frame']
+        
+        global_settings_frame = ttk.LabelFrame(normal_frame, text="Global Plot & Data Settings", padding=10)
         global_settings_frame.pack(fill='x', pady=5)
         
         ttk.Label(global_settings_frame, text="Separator:").grid(row=0, column=0, sticky='w', pady=(0, 2))
@@ -180,8 +305,7 @@ class GnuplotApp:
         global_settings_frame.columnconfigure(1, weight=1)
         plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         
-        # <<< NEW: Font size controls >>>
-        font_frame = ttk.LabelFrame(controls_frame, text="Font Sizes", padding=10)
+        font_frame = ttk.LabelFrame(normal_frame, text="Font Sizes", padding=10)
         font_frame.pack(fill='x', pady=5)
         plot_cmd = lambda: self.plot(widgets, key)
 
@@ -197,8 +321,7 @@ class GnuplotApp:
         widgets['legend_font_size'] = tk.StringVar(value='12')
         ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['legend_font_size'], width=5, command=plot_cmd).grid(row=0, column=5, sticky='w')
 
-
-        dataset_frame = ttk.LabelFrame(controls_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
+        dataset_frame = ttk.LabelFrame(normal_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
         columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
         widgets['tree'] = ttk.Treeview(dataset_frame, columns=columns, show="tree headings", height=4)
         widgets['tree'].heading("#0", text="Show"); widgets['tree'].column("#0", width=40, anchor='center', stretch=False)
@@ -207,7 +330,7 @@ class GnuplotApp:
         widgets['tree'].bind("<<TreeviewSelect>>", lambda event, w=widgets: self.on_tree_select(event, w))
         widgets['tree'].bind("<Button-1>", lambda event, w=widgets, k=key: self.toggle_checkbox(event, w, k))
 
-        editor_frame = ttk.LabelFrame(controls_frame, text="Dataset Editor", padding=10); editor_frame.pack(fill='x', pady=5)
+        editor_frame = ttk.LabelFrame(normal_frame, text="Dataset Editor", padding=10); editor_frame.pack(fill='x', pady=5)
         widgets['filepath'] = tk.StringVar(); filepath_entry = ttk.Entry(editor_frame, textvariable=widgets['filepath'], width=25); filepath_entry.grid(row=0, column=1, sticky="ew", columnspan=3); filepath_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Data File:").grid(row=0, column=0, sticky="w", pady=2); ttk.Button(editor_frame, text="Browse...", command=lambda w=widgets: self.browse_file(w)).grid(row=0, column=4, padx=5)
         widgets['x_col'] = tk.StringVar(value='1'); x_col_entry = ttk.Entry(editor_frame, textvariable=widgets['x_col'], width=5); x_col_entry.grid(row=1, column=1, sticky="w"); x_col_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="X Col:").grid(row=1, column=0, sticky="w", pady=2)
         widgets['y_col'] = tk.StringVar(value='2'); y_col_entry = ttk.Entry(editor_frame, textvariable=widgets['y_col'], width=5); y_col_entry.grid(row=1, column=3, sticky="w"); y_col_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Y Col:").grid(row=1, column=2, sticky="e", pady=2, padx=5)
@@ -225,14 +348,14 @@ class GnuplotApp:
         widgets['detect_headers_cb'] = ttk.Checkbutton(options_frame, text="Detect Column Headers", variable=widgets['detect_headers'])
         widgets['detect_headers_cb'].pack(side='left', padx=10)
 
-        dataset_actions_frame = ttk.Frame(controls_frame); dataset_actions_frame.pack(fill='x', pady=5)
+        dataset_actions_frame = ttk.Frame(normal_frame); dataset_actions_frame.pack(fill='x', pady=5)
         ttk.Button(dataset_actions_frame, text="Add Dataset", command=lambda w=widgets, k=key: self.add_dataset(w, k)).pack(side='left', padx=5)
         widgets['update_button'] = ttk.Button(dataset_actions_frame, text="Update Selected", state="disabled", command=lambda w=widgets, k=key: self.update_dataset(w, k)); widgets['update_button'].pack(side='left', padx=5)
         widgets['duplicate_button'] = ttk.Button(dataset_actions_frame, text="Duplicate Selected", state="disabled", command=lambda w=widgets, k=key: self.duplicate_dataset(w, k)); widgets['duplicate_button'].pack(side='left', padx=5)
         widgets['load_all_button'] = ttk.Button(dataset_actions_frame, text="Load All Columns", state="disabled", command=lambda w=widgets, k=key: self.load_all_columns(w, k)); widgets['load_all_button'].pack(side='left', padx=5)
         widgets['remove_button'] = ttk.Button(dataset_actions_frame, text="Remove Selected", state="disabled", command=lambda w=widgets, k=key: self.remove_dataset(w, k)); widgets['remove_button'].pack(side='right')
 
-        axis_frame = ttk.LabelFrame(controls_frame, text="Axes Settings", padding=10); axis_frame.pack(fill='x', pady=5)
+        axis_frame = ttk.LabelFrame(normal_frame, text="Axes Settings", padding=10); axis_frame.pack(fill='x', pady=5)
         widgets['xlabel'] = tk.StringVar(); xlabel_entry = ttk.Entry(axis_frame, textvariable=widgets['xlabel'], width=30); xlabel_entry.grid(row=0, column=1, columnspan=5, sticky="ew"); xlabel_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="X-Axis Title:").grid(row=0, column=0, sticky="w", pady=2)
         widgets['ylabel'] = tk.StringVar(); ylabel_entry = ttk.Entry(axis_frame, textvariable=widgets['ylabel'], width=30); ylabel_entry.grid(row=1, column=1, columnspan=5, sticky="ew"); ylabel_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="Y1-Axis Title:").grid(row=1, column=0, sticky="w", pady=2)
         widgets['y2label'] = tk.StringVar(); y2label_entry = ttk.Entry(axis_frame, textvariable=widgets['y2label'], width=30); y2label_entry.grid(row=2, column=1, columnspan=5, sticky="ew"); y2label_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="Y2-Axis Title:").grid(row=2, column=0, sticky="w", pady=2)
@@ -250,7 +373,7 @@ class GnuplotApp:
         ttk.Label(axis_frame, text="Y1-Axis Range:").grid(row=6, column=0, sticky="w"); widgets['y_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=2, sticky="w"); widgets['y_min'] = tk.StringVar(); widgets['y_max'] = tk.StringVar(); widgets['y_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_min'], width=8, state='disabled'); widgets['y_min_entry'].grid(row=6, column=3); widgets['y_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=6, column=4, padx=5); widgets['y_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_max'], width=8, state='disabled'); widgets['y_max_entry'].grid(row=6, column=5); widgets['y_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         ttk.Label(axis_frame, text="Y2-Axis Range:").grid(row=7, column=0, sticky="w"); widgets['y2_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y2_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y2_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=2, sticky="w"); widgets['y2_min'] = tk.StringVar(); widgets['y2_max'] = tk.StringVar(); widgets['y2_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_min'], width=8, state='disabled'); widgets['y2_min_entry'].grid(row=7, column=3); widgets['y2_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=7, column=4, padx=5); widgets['y2_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_max'], width=8, state='disabled'); widgets['y2_max_entry'].grid(row=7, column=5); widgets['y2_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
 
-        layout_frame = ttk.LabelFrame(controls_frame, text="Plot Layout & Margins", padding=10)
+        layout_frame = ttk.LabelFrame(normal_frame, text="Plot Layout & Margins", padding=10)
         layout_frame.pack(fill='x', pady=5)
         widgets['use_custom_margins'] = tk.BooleanVar(value=False)
         ttk.Checkbutton(layout_frame, text="Set Custom Margins", variable=widgets['use_custom_margins'], command=lambda w=widgets: self.update_margin_entry_state(w)).grid(row=0, column=0, columnspan=4, sticky='w')
@@ -260,30 +383,20 @@ class GnuplotApp:
         widgets['tmargin'] = tk.StringVar(value='2')
         widgets['bmargin'] = tk.StringVar(value='5')
         
-        plot_cmd = lambda: self.plot(widgets, key)
-
         lmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['lmargin'], width=7, state='disabled', command=plot_cmd)
-        lmargin_spinbox.grid(row=1, column=1)
-        lmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
-        widgets['lmargin_entry'] = lmargin_spinbox
+        lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['lmargin_entry'] = lmargin_spinbox
         ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w')
 
         rmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['rmargin'], width=7, state='disabled', command=plot_cmd)
-        rmargin_spinbox.grid(row=1, column=3)
-        rmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
-        widgets['rmargin_entry'] = rmargin_spinbox
+        rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['rmargin_entry'] = rmargin_spinbox
         ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w')
 
         tmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['tmargin'], width=7, state='disabled', command=plot_cmd)
-        tmargin_spinbox.grid(row=2, column=1)
-        tmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
-        widgets['tmargin_entry'] = tmargin_spinbox
+        tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['tmargin_entry'] = tmargin_spinbox
         ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w')
 
         bmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['bmargin'], width=7, state='disabled', command=plot_cmd)
-        bmargin_spinbox.grid(row=2, column=3)
-        bmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key))
-        widgets['bmargin_entry'] = bmargin_spinbox
+        bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['bmargin_entry'] = bmargin_spinbox
         ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w')
         
         ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10)
@@ -294,9 +407,59 @@ class GnuplotApp:
         widgets['aspect_ratio_entry'].grid(row=4, column=2)
         widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         
-        main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10); ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5); replot_frame = ttk.Frame(controls_frame); replot_frame.pack(fill='x', pady=5); widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5); ttk.Separator(controls_frame).pack(fill='x', pady=10); ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
+        # --- LOGFILE MODE WIDGETS ---
+        logfile_frame = widgets['logfile_mode_frame']
+
+        logfile_selection_frame = ttk.LabelFrame(logfile_frame, text="Logfile Selection", padding=10)
+        logfile_selection_frame.pack(fill='x', pady=5)
+        widgets['logfile_path'] = tk.StringVar()
+        ttk.Label(logfile_selection_frame, text="Logfile:").grid(row=0, column=0, sticky='w')
+        ttk.Entry(logfile_selection_frame, textvariable=widgets['logfile_path']).grid(row=0, column=1, sticky='ew')
+        ttk.Button(logfile_selection_frame, text="Browse...", command=lambda w=widgets: self._browse_logfile(w)).grid(row=0, column=2, padx=5)
+        ttk.Button(logfile_selection_frame, text="Parse Logfile", command=lambda w=widgets, k=key: self._parse_logfile(w, k)).grid(row=1, column=1, pady=5)
+        logfile_selection_frame.columnconfigure(1, weight=1)
+
+        subplot_config_frame = ttk.LabelFrame(logfile_frame, text="Sub-plot Configuration", padding=10)
+        subplot_config_frame.pack(fill='x', pady=5)
         
-        export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5); ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5); ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
+        widgets['subplot_vars'] = []
+        for i in range(4):
+            row, col = i // 2, i % 2
+            title = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"][i]
+            
+            sub_frame = ttk.Frame(subplot_config_frame, padding=5)
+            sub_frame.grid(row=row, column=col, sticky='nsew', padx=5, pady=5)
+            subplot_config_frame.columnconfigure(col, weight=1)
+            subplot_config_frame.rowconfigure(row, weight=1)
+
+            ttk.Label(sub_frame, text=f"Sub-plot {i+1} ({title})", font='-weight bold').pack(anchor='w')
+            
+            # Title Entry
+            title_var = tk.StringVar()
+            ttk.Label(sub_frame, text="Title:").pack(anchor='w', pady=(5,0))
+            ttk.Entry(sub_frame, textvariable=title_var).pack(fill='x')
+            
+            # Y-Column Combobox
+            y_col_var = tk.StringVar()
+            ttk.Label(sub_frame, text="Y-Axis Column:").pack(anchor='w', pady=(5,0))
+            combo = ttk.Combobox(sub_frame, textvariable=y_col_var, state='readonly')
+            combo.pack(fill='x')
+            
+            widgets['subplot_vars'].append({'title': title_var, 'y_col': y_col_var, 'combo': combo})
+
+        # --- COMMON WIDGETS (Actions, Plot Display) ---
+        main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10)
+        ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5)
+        
+        replot_frame = ttk.Frame(controls_frame); replot_frame.pack(fill='x', pady=5)
+        widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5)
+        
+        ttk.Separator(controls_frame).pack(fill='x', pady=10)
+        ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
+        
+        export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5)
+        ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5)
+        ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
         widgets['plot_label'] = ttk.Label(plot_frame, text="Plot will appear here...", anchor='center'); widgets['plot_label'].pack(expand=True, fill='both')
         
         tab_data = {
@@ -305,11 +468,51 @@ class GnuplotApp:
             'plot_height': 400, 
             'resize_job': None, 
             'frame': tab_frame,
-            'paned_window': paned_window
+            'paned_window': paned_window,
+            'temp_file_path': None,
+            'logfile_columns': []
         }
         plot_frame.bind("<Configure>", lambda event, k=key: self.on_plot_resize(event, k))
         self.tabs[key] = tab_data
+        
+        self._switch_mode(widgets) # Set initial view
         return tab_frame
+
+    def _browse_logfile(self, widgets):
+        filename = filedialog.askopenfilename(title="Select a log file", filetypes=(("Log files", "*.log"), ("All files", "*.*")))
+        if filename:
+            widgets['logfile_path'].set(filename)
+
+    def _parse_logfile(self, widgets, key):
+        logfile_path = widgets['logfile_path'].get()
+        if not logfile_path:
+            messagebox.showwarning("No File", "Please select a logfile first.")
+            return
+
+        parser = LogfileParser(logfile_path)
+        df, error = parser.parse()
+
+        if error:
+            messagebox.showerror("Parsing Error", error)
+            return
+        
+        # Save to a temporary file
+        tab_data = self.tabs[key]
+        if tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
+            os.remove(tab_data['temp_file_path'])
+        
+        with NamedTemporaryFile(mode='w', delete=False, suffix='.csv', newline='') as tmpfile:
+            df.to_csv(tmpfile, index=False)
+            tab_data['temp_file_path'] = tmpfile.name
+        
+        tab_data['logfile_columns'] = list(df.columns)
+        
+        # Populate comboboxes
+        for i in range(4):
+            combo = widgets['subplot_vars'][i]['combo']
+            combo['values'] = tab_data['logfile_columns']
+
+        messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
 
     def _on_separator_change(self, widgets):
         if widgets['separator'].get() == ',':
@@ -381,6 +584,45 @@ class GnuplotApp:
         except ValueError:
             messagebox.showwarning("Invalid Input", f"Please enter a valid whole number for '{field_name}'.\nYou entered: '{value_str}'")
             return False
+
+    def generate_logfile_plot_script(self, widgets, key, terminal_config):
+        tab_data = self.tabs[key]
+        temp_file = tab_data.get('temp_file_path')
+        if not temp_file or not os.path.exists(temp_file):
+            messagebox.showwarning("No Data", "Please parse a logfile before plotting.")
+            return None
+
+        script = f"""
+            set terminal {terminal_config['term']} size {terminal_config['size']} enhanced font 'Verdana,10'
+            set output '{terminal_config['output']}'
+            set datafile separator ","
+            set multiplot layout 2,2 title "Logfile Analysis"
+        """
+        
+        plot_commands = []
+        has_plot = False
+        for i in range(4):
+            sub_plot_vars = widgets['subplot_vars'][i]
+            y_col = sub_plot_vars['y_col'].get()
+            title = sub_plot_vars['title'].get()
+            
+            if y_col:
+                has_plot = True
+                script += f"""
+                    set title "{title if title else y_col}"
+                    set xlabel "Time"
+                    set ylabel "{y_col}"
+                    plot '{temp_file}' using "Time":"{y_col}" with lines notitle
+                """
+            else: # Empty plot
+                script += "set title ''; unset xlabel; unset ylabel; plot [0:1][0:1] -1 with lines notitle\n"
+
+        if not has_plot:
+            messagebox.showinfo("Info", "No columns selected for plotting in any sub-plot.")
+            return None
+
+        script += "\nunset multiplot\n"
+        return script, None # No data to pipe for logfile mode
 
     def generate_gnuplot_script(self, widgets, key, terminal_config):
         # Validation checks
@@ -525,7 +767,13 @@ class GnuplotApp:
         image_filename = f"plot_{key}.png"
         terminal_config = {'term': 'pngcairo', 'size': f'{width},{height}', 'output': image_filename}
         
-        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        mode = widgets['mode'].get()
+        gnuplot_script, data_to_pipe = None, None
+
+        if mode == "Normal":
+            gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        else: # Plot Logfile
+            gnuplot_script, data_to_pipe = self.generate_logfile_plot_script(widgets, key, terminal_config)
         
         if not gnuplot_script: 
             return
@@ -552,7 +800,13 @@ class GnuplotApp:
         if extension not in term_map: messagebox.showerror("Unsupported Format", f"File format '{extension}' is not supported."); return
         terminal_config = {'term': term_map[extension], 'size': '1024,768', 'output': filepath}
 
-        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        mode = widgets['mode'].get()
+        gnuplot_script, data_to_pipe = None, None
+
+        if mode == "Normal":
+            gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        else: # Plot Logfile
+            gnuplot_script, data_to_pipe = self.generate_logfile_plot_script(widgets, key, terminal_config)
 
         if not gnuplot_script: 
             messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
@@ -570,7 +824,15 @@ class GnuplotApp:
         image_filename = os.path.abspath(f"plot_{key}_cropped.png") 
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
         terminal_config = {'term': 'pngcairo crop', 'size': f'{width},{height}', 'output': image_filename}
-        gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        
+        mode = widgets['mode'].get()
+        gnuplot_script, data_to_pipe = None, None
+        
+        if mode == "Normal":
+            gnuplot_script, data_to_pipe = self.generate_gnuplot_script(widgets, key, terminal_config)
+        else: # Plot Logfile
+            gnuplot_script, data_to_pipe = self.generate_logfile_plot_script(widgets, key, terminal_config)
+
         if not gnuplot_script: 
             messagebox.showwarning("Plotting Canceled", "Plotting was canceled due to no visible data or an invalid setting.")
             return
@@ -844,15 +1106,24 @@ class GnuplotApp:
             if not key_found:
                 continue
             
-            widgets = self.tabs[key_found]['widgets']
-            paned_window = self.tabs[key_found]['paned_window']
+            tab_info = self.tabs[key_found]
+            widgets = tab_info['widgets']
+            paned_window = tab_info['paned_window']
+            
             tab_data = {
                 'tab_title': self.notebook.tab(tab_id, 'text'), 
                 'sash_position': paned_window.sashpos(0),
+                'mode': widgets['mode'].get(),
                 'settings': {}, 
-                'datasets': []
+                'datasets': [],
+                'logfile_settings': {
+                    'path': widgets['logfile_path'].get(),
+                    'subplot_titles': [v['title'].get() for v in widgets['subplot_vars']],
+                    'subplot_y_cols': [v['y_col'].get() for v in widgets['subplot_vars']],
+                }
             }
-
+            
+            # Save Normal mode settings
             for widget_key, var in widgets.items():
                 if isinstance(var, (tk.StringVar, tk.BooleanVar)):
                     tab_data['settings'][widget_key] = var.get()
@@ -903,11 +1174,12 @@ class GnuplotApp:
 
         for i, tab_data in enumerate(session_data['tabs']):
             new_key = self.add_new_tab()
-            widgets = self.tabs[new_key]['widgets']
-            paned_window = self.tabs[new_key]['paned_window']
+            tab_info = self.tabs[new_key]
+            widgets = tab_info['widgets']
             
             self.notebook.tab(i, text=tab_data.get('tab_title', f"Plot {i+1}"))
             
+            # Restore Normal mode settings
             settings = tab_data.get('settings', {})
             for key, value in settings.items():
                 if key in widgets and isinstance(widgets[key], (tk.StringVar, tk.BooleanVar)):
@@ -919,6 +1191,25 @@ class GnuplotApp:
                 text = "☑" if ds.get('visible', True) else "☐"
                 widgets['tree'].insert('', 'end', values=ds.get('values', []), tags=tags, text=text)
 
+            # Restore Logfile mode settings
+            logfile_settings = tab_data.get('logfile_settings', {})
+            if logfile_settings:
+                widgets['logfile_path'].set(logfile_settings.get('path', ''))
+                subplot_titles = logfile_settings.get('subplot_titles', [])
+                subplot_y_cols = logfile_settings.get('subplot_y_cols', [])
+                for j in range(4):
+                    if j < len(subplot_titles): widgets['subplot_vars'][j]['title'].set(subplot_titles[j])
+                    if j < len(subplot_y_cols): widgets['subplot_vars'][j]['y_col'].set(subplot_y_cols[j])
+                # If a logfile was loaded, re-parse it to populate comboboxes
+                if widgets['logfile_path'].get():
+                    self._parse_logfile(widgets, new_key)
+
+            # Restore mode and UI view
+            mode = tab_data.get('mode', "Normal")
+            widgets['mode'].set(mode)
+            self._switch_mode(widgets)
+            
+            # Common updates
             self._on_separator_change(widgets)
             self.update_range_entry_state(widgets)
             self.update_margin_entry_state(widgets)
@@ -928,7 +1219,7 @@ class GnuplotApp:
             sash_pos = tab_data.get('sash_position')
             if sash_pos:
                 self.root.update_idletasks()
-                paned_window.sashpos(0, sash_pos)
+                tab_info['paned_window'].sashpos(0, sash_pos)
 
         self.notebook.select(0)
 
