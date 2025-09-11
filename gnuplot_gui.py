@@ -30,10 +30,22 @@ class LogfileParser:
         self.solver_re = re.compile(
             r"Solving for (\S+), Initial residual = (\S+), Final residual = (\S+), No Iterations\s+(\d+)"
         )
-        # Regex for functionObjects with a single scalar value
-        self.fo_scalar_re = re.compile(r"^\s*(\S+)\s*=\s*(\S+)\s*$")
-        # Regex for functionObjects with a vector value in parentheses
-        self.fo_vector_re = re.compile(r"^\s*(\S+)\s*=\s*\(([\d\.\-eE\s]+)\)\s*$")
+        # Regex for functionObjects with a vector value. Captures name and value string.
+        self.fo_vector_re = re.compile(r"^\s*(.+?)\s*=\s*\((.+)\)\s*$")
+        # Regex for functionObjects with a single scalar value. Captures name and value string.
+        self.fo_scalar_re = re.compile(r"^\s*(.+?)\s*=\s*(\S+)\s*$")
+
+    def _clean_column_name(self, raw_name):
+        """Creates a clean, valid column name from a raw string found in the log file."""
+        # Replace common separators and brackets with underscores
+        name = re.sub(r'[\s\(\),]', '_', raw_name)
+        # Remove 'of' if it's a whole word, surrounded by underscores
+        name = re.sub(r'_of_', '_', name)
+        # Collapse multiple underscores into one
+        name = re.sub(r'__+', '_', name)
+        # Remove leading/trailing underscores
+        name = name.strip('_')
+        return name
 
     def parse(self):
         records = []
@@ -52,33 +64,51 @@ class LogfileParser:
 
                     if not current_record: # Skip lines before the first "Time ="
                         continue
+
+                    # Skip continuity error lines to avoid creating unnecessary columns
+                    if "time step continuity errors" in line:
+                        continue
                         
                     # Check for solver lines
                     solver_match = self.solver_re.search(line)
                     if solver_match:
                         var, i_res, f_res, iters = solver_match.groups()
                         current_record[f'{var}_initial_residual'] = float(i_res)
-                        current_record[f'{var}_final_residual'] = float(f_res)
+                        # Final residual is ignored as requested
                         continue # Move to next line after match
                     
                     # Check for function object lines (vector or scalar)
                     line_stripped = line.strip()
+
+                    # Try vector match first, as its pattern is more specific
                     vector_match = self.fo_vector_re.match(line_stripped)
                     if vector_match:
-                        name, values_str = vector_match.groups()
-                        values = [float(v) for v in values_str.split()]
-                        current_record[f'{name}_x'] = values[0]
-                        if len(values) > 1: current_record[f'{name}_y'] = values[1]
-                        if len(values) > 2: current_record[f'{name}_z'] = values[2]
+                        name_raw, values_str = vector_match.groups()
+                        # Exclude solver lines which can sometimes match this regex
+                        if "Solving for" not in name_raw:
+                            name = self._clean_column_name(name_raw)
+                            try:
+                                values = [float(v) for v in values_str.split()]
+                                current_record[f'{name}_x'] = values[0]
+                                if len(values) > 1: current_record[f'{name}_y'] = values[1]
+                                if len(values) > 2: current_record[f'{name}_z'] = values[2]
+                            except (ValueError, IndexError):
+                                pass # Ignore if values are not numbers
                         continue
-
+                    
+                    # Then try scalar match
                     scalar_match = self.fo_scalar_re.match(line_stripped)
                     if scalar_match:
-                        name, val = scalar_match.groups()
-                        try:
-                            current_record[name] = float(val)
-                        except (ValueError, TypeError):
-                            pass # Ignore if value is not a float
+                        name_raw, val_str = scalar_match.groups()
+                        # Exclude solver lines
+                        if "Solving for" not in name_raw:
+                            try:
+                                val = float(val_str)
+                                name = self._clean_column_name(name_raw)
+                                current_record[name] = val
+                            except (ValueError, TypeError):
+                                # This will safely ignore lines where the value has non-numeric parts (e.g., '12.98 s')
+                                pass
                         continue
 
             if current_record: # Append the last record
@@ -86,6 +116,19 @@ class LogfileParser:
 
             if not records:
                 return None, "No data could be parsed. Check the logfile format."
+
+            # --- Filter for common columns ---
+            if len(records) > 1:
+                # Get the intersection of keys present in all records
+                common_keys = set(records[0].keys())
+                for record in records[1:]:
+                    common_keys.intersection_update(record.keys())
+                
+                # Filter records to only include common keys
+                filtered_records = []
+                for record in records:
+                    filtered_records.append({k: record.get(k) for k in common_keys})
+                records = filtered_records
 
             df = pd.DataFrame.from_records(records)
             df = df.fillna(method='ffill') # Forward fill to handle missing values
@@ -104,7 +147,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V21.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V24.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -407,6 +450,13 @@ class GnuplotApp:
         widgets['aspect_ratio_entry'].grid(row=4, column=2)
         widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
         
+        # --- Normal Mode Actions ---
+        main_action_frame = ttk.Frame(normal_frame); main_action_frame.pack(fill='x', pady=10)
+        ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5)
+        
+        replot_frame = ttk.Frame(normal_frame); replot_frame.pack(fill='x', pady=5)
+        widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5)
+
         # --- LOGFILE MODE WIDGETS ---
         logfile_frame = widgets['logfile_mode_frame']
 
@@ -423,74 +473,107 @@ class GnuplotApp:
         logfile_layout_frame = ttk.LabelFrame(logfile_frame, text="Layout, Margins & Grid", padding=10)
         logfile_layout_frame.pack(fill='x', pady=5)
         
-        ttk.Label(logfile_layout_frame, text="Margins (L, R, B, T):").grid(row=0, column=0, sticky='w', pady=2)
-        widgets['logfile_lmargin'] = tk.StringVar(value='0.1')
-        widgets['logfile_rmargin'] = tk.StringVar(value='0.9')
-        widgets['logfile_bmargin'] = tk.StringVar(value='0.1')
-        widgets['logfile_tmargin'] = tk.StringVar(value='0.9')
-        
-        margin_spin_l = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_lmargin'], width=5)
-        margin_spin_l.grid(row=0, column=1, padx=2)
-        margin_spin_r = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_rmargin'], width=5)
-        margin_spin_r.grid(row=0, column=2, padx=2)
-        margin_spin_b = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_bmargin'], width=5)
-        margin_spin_b.grid(row=0, column=3, padx=2)
-        margin_spin_t = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_tmargin'], width=5)
-        margin_spin_t.grid(row=0, column=4, padx=2)
+        ttk.Label(logfile_layout_frame, text="Margins (L,R,B,T):").grid(row=0, column=0, sticky='w', pady=2)
+        widgets['logfile_lmargin'] = tk.StringVar(value='0.1'); widgets['logfile_rmargin'] = tk.StringVar(value='0.9'); widgets['logfile_bmargin'] = tk.StringVar(value='0.1'); widgets['logfile_tmargin'] = tk.StringVar(value='0.9')
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_lmargin'], width=5).grid(row=0, column=1, padx=2)
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_rmargin'], width=5).grid(row=0, column=2, padx=2)
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_bmargin'], width=5).grid(row=0, column=3, padx=2)
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_tmargin'], width=5).grid(row=0, column=4, padx=2)
 
-        ttk.Label(logfile_layout_frame, text="Grid:").grid(row=1, column=0, sticky='w', pady=2)
-        widgets['logfile_grid_on'] = tk.BooleanVar(value=True)
-        widgets['logfile_grid_style'] = tk.StringVar(value='Medium')
-        ttk.Checkbutton(logfile_layout_frame, text="On", variable=widgets['logfile_grid_on']).grid(row=1, column=1, sticky='w')
-        ttk.Combobox(logfile_layout_frame, textvariable=widgets['logfile_grid_style'], values=['Light', 'Medium', 'Dark'], width=8).grid(row=1, column=2, columnspan=2, sticky='w')
+        ttk.Label(logfile_layout_frame, text="Spacing (X, Y):").grid(row=1, column=0, sticky='w', pady=2)
+        widgets['logfile_xspacing'] = tk.StringVar(value='0.08'); widgets['logfile_yspacing'] = tk.StringVar(value='0.08')
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_xspacing'], width=5).grid(row=1, column=1, padx=2)
+        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_yspacing'], width=5).grid(row=1, column=2, padx=2)
+
+        ttk.Label(logfile_layout_frame, text="Grid:").grid(row=2, column=0, sticky='w', pady=2)
+        widgets['logfile_grid_on'] = tk.BooleanVar(value=True); widgets['logfile_grid_style'] = tk.StringVar(value='Medium')
+        ttk.Checkbutton(logfile_layout_frame, text="On", variable=widgets['logfile_grid_on']).grid(row=2, column=1, sticky='w')
+        ttk.Combobox(logfile_layout_frame, textvariable=widgets['logfile_grid_style'], values=['Light', 'Medium', 'Dark'], width=8).grid(row=2, column=2, columnspan=2, sticky='w')
+
+        # --- Logfile Mode Actions (Moved Up) ---
+        logfile_action_frame = ttk.LabelFrame(logfile_frame, text="Plot Actions", padding=10)
+        logfile_action_frame.pack(fill='x', pady=5)
+        
+        logfile_main_action_frame = ttk.Frame(logfile_action_frame); logfile_main_action_frame.pack(pady=2)
+        ttk.Button(logfile_main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack()
+        
+        logfile_replot_frame = ttk.Frame(logfile_action_frame); logfile_replot_frame.pack(pady=2)
+        widgets['logfile_replot_interval'] = tk.StringVar(value='1000')
+        ttk.Label(logfile_replot_frame, text="Auto (ms):").pack(side='left')
+        ttk.Entry(logfile_replot_frame, textvariable=widgets['logfile_replot_interval'], width=8).pack(side='left', padx=5)
+        widgets['logfile_start_button'] = ttk.Button(logfile_replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['logfile_start_button'].pack(side='left')
+        widgets['logfile_stop_button'] = ttk.Button(logfile_replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['logfile_stop_button'].pack(side='left', padx=5)
 
         subplot_config_frame = ttk.LabelFrame(logfile_frame, text="Sub-plot Configuration", padding=10)
         subplot_config_frame.pack(fill='x', pady=5, expand=True)
         
         widgets['subplot_vars'] = []
         for i in range(4):
-            row, col = i // 2, i % 2
             title = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"][i]
             
-            sub_frame = ttk.Frame(subplot_config_frame, padding=5)
-            sub_frame.grid(row=row, column=col, sticky='nsew', padx=5, pady=5)
-            subplot_config_frame.columnconfigure(col, weight=1)
-            subplot_config_frame.rowconfigure(row, weight=1)
+            sub_frame = ttk.LabelFrame(subplot_config_frame, text=f"Sub-plot {i+1} ({title})", padding=10)
+            sub_frame.grid(row=i, column=0, sticky='ew', padx=5, pady=5)
+            subplot_config_frame.columnconfigure(0, weight=1)
 
-            ttk.Label(sub_frame, text=f"Sub-plot {i+1} ({title})", font='-weight bold').pack(anchor='w')
+            # --- Row 0: Labels and Options ---
+            top_frame = ttk.Frame(sub_frame); top_frame.pack(fill='x')
             
-            # Y-Axis Label
             y_label_var = tk.StringVar()
-            ttk.Label(sub_frame, text="Y-Axis Label:").pack(anchor='w', pady=(5,0))
-            ttk.Entry(sub_frame, textvariable=y_label_var).pack(fill='x')
+            ttk.Label(top_frame, text="Y-Axis Label:").pack(side='left')
+            ttk.Entry(top_frame, textvariable=y_label_var, width=20).pack(side='left', fill='x', expand=True, padx=5)
             
-            # Y Log Scale
             y_log_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(sub_frame, text="Y Log Scale", variable=y_log_var).pack(anchor='w')
+            ttk.Checkbutton(top_frame, text="Y Log", variable=y_log_var).pack(side='left', padx=5)
 
-            # Y-Column Listbox
+            show_legend_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(top_frame, text="Show Legend", variable=show_legend_var).pack(side='left', padx=5)
+            
+            # --- Row 1 & 2: Axis Ranges ---
+            range_frame = ttk.Frame(sub_frame); range_frame.pack(fill='x', pady=5)
+            
+            # Helper to create range controls
+            def create_range_controls(parent, axis_name, row):
+                ttk.Label(parent, text=f"{axis_name}-Axis Range:").grid(row=row, column=0, sticky="w")
+                range_mode_var = tk.StringVar(value='auto')
+                min_var = tk.StringVar(); max_var = tk.StringVar()
+                
+                min_entry = ttk.Entry(parent, textvariable=min_var, width=8, state='disabled')
+                max_entry = ttk.Entry(parent, textvariable=max_var, width=8, state='disabled')
+
+                def update_state():
+                    state = 'normal' if range_mode_var.get() == 'manual' else 'disabled'
+                    min_entry.config(state=state)
+                    max_entry.config(state=state)
+
+                ttk.Radiobutton(parent, text="Auto", variable=range_mode_var, value='auto', command=update_state).grid(row=row, column=1, sticky="w")
+                ttk.Radiobutton(parent, text="Manual:", variable=range_mode_var, value='manual', command=update_state).grid(row=row, column=2, sticky="w")
+                min_entry.grid(row=row, column=3, padx=2)
+                ttk.Label(parent, text="to").grid(row=row, column=4, padx=2)
+                max_entry.grid(row=row, column=5, padx=2)
+
+                return {'mode': range_mode_var, 'min': min_var, 'max': max_var}
+
+            x_range_vars = create_range_controls(range_frame, 'X', 0)
+            y_range_vars = create_range_controls(range_frame, 'Y', 1)
+
+            # --- Row 3: Column Selection Listbox ---
             ttk.Label(sub_frame, text="Y-Axis Columns:").pack(anchor='w', pady=(5,0))
-            list_frame = ttk.Frame(sub_frame)
-            list_frame.pack(fill='both', expand=True)
+            list_frame = ttk.Frame(sub_frame); list_frame.pack(fill='both', expand=True)
             listbox = tk.Listbox(list_frame, selectmode='multiple', height=5, exportselection=False)
             listbox.pack(side='left', fill='both', expand=True)
-            list_scroll = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
-            list_scroll.pack(side='right', fill='y')
+            list_scroll = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview); list_scroll.pack(side='right', fill='y')
             listbox.config(yscrollcommand=list_scroll.set)
 
             widgets['subplot_vars'].append({
                 'y_label': y_label_var, 
-                'y_log': y_log_var, 
+                'y_log': y_log_var,
+                'show_legend': show_legend_var,
+                'x_range': x_range_vars,
+                'y_range': y_range_vars,
                 'listbox': listbox
             })
             
-        # --- COMMON WIDGETS (Actions, Plot Display) ---
-        main_action_frame = ttk.Frame(controls_frame); main_action_frame.pack(fill='x', pady=10)
-        ttk.Button(main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack(pady=5)
-        
-        replot_frame = ttk.Frame(controls_frame); replot_frame.pack(fill='x', pady=5)
-        widgets['replot_interval'] = tk.StringVar(value='1000'); ttk.Label(replot_frame, text="Auto (ms):").pack(side='left'); ttk.Entry(replot_frame, textvariable=widgets['replot_interval'], width=8).pack(side='left', padx=5); widgets['start_button'] = ttk.Button(replot_frame, text="Start", command=lambda w=widgets, k=key: self.start_replot(w, k)); widgets['start_button'].pack(side='left'); widgets['stop_button'] = ttk.Button(replot_frame, text="Stop", state="disabled", command=lambda w=widgets: self.stop_replot(w)); widgets['stop_button'].pack(side='left', padx=5)
-        
+        # --- COMMON WIDGETS (Plot Display & Close Tab) ---
         ttk.Separator(controls_frame).pack(fill='x', pady=10)
         ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
         
@@ -542,13 +625,19 @@ class GnuplotApp:
             df.to_csv(tmpfile, index=False)
             tab_data['temp_file_path'] = tmpfile.name
         
-        tab_data['logfile_columns'] = list(df.columns)
+        # Sort columns for user-friendly display
+        all_columns = [col for col in df.columns if col != 'Time']
+        residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
+        other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
+        sorted_cols = residual_cols + other_cols
+        
+        tab_data['logfile_columns'] = ['Time'] + sorted_cols
         
         # Populate listboxes
         for i in range(4):
             listbox = widgets['subplot_vars'][i]['listbox']
             listbox.delete(0, 'end') # Clear previous entries
-            for col in tab_data['logfile_columns']:
+            for col in sorted_cols:
                 listbox.insert('end', col)
 
         messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
@@ -631,21 +720,20 @@ class GnuplotApp:
             messagebox.showwarning("No Data", "Please parse a logfile before plotting.")
             return None, None
 
-        # Validate margins
-        margins = [
-            widgets['logfile_lmargin'].get(), widgets['logfile_rmargin'].get(),
-            widgets['logfile_bmargin'].get(), widgets['logfile_tmargin'].get()
-        ]
-        for m in margins:
-            if not self._validate_numeric(m, "Margin"): return None, None
-
-        margin_cmd = f"margins {margins[0]}, {margins[1]}, {margins[2]}, {margins[3]}"
+        # Validate margins and spacing
+        for var, name in [(widgets['logfile_lmargin'], "Left Margin"), (widgets['logfile_rmargin'], "Right Margin"),
+                          (widgets['logfile_bmargin'], "Bottom Margin"), (widgets['logfile_tmargin'], "Top Margin"),
+                          (widgets['logfile_xspacing'], "X Spacing"), (widgets['logfile_yspacing'], "Y Spacing")]:
+            if not self._validate_numeric(var.get(), name): return None, None
         
+        margin_cmd = f"margins {widgets['logfile_lmargin'].get()}, {widgets['logfile_rmargin'].get()}, {widgets['logfile_bmargin'].get()}, {widgets['logfile_tmargin'].get()}"
+        spacing_cmd = f"spacing {widgets['logfile_xspacing'].get()}, {widgets['logfile_yspacing'].get()}"
+
         script = f"""
             set terminal {terminal_config['term']} size {terminal_config['size']} enhanced font 'Verdana,10'
             set output '{terminal_config['output']}'
             set datafile separator ","
-            set multiplot layout 2,2 {margin_cmd}
+            set multiplot layout 2,2 {margin_cmd} {spacing_cmd}
         """
         
         if widgets['logfile_grid_on'].get():
@@ -658,36 +746,45 @@ class GnuplotApp:
         has_plot = False
         for i in range(4):
             sub_plot_vars = widgets['subplot_vars'][i]
+            script += f'\n# Subplot {i+1}\n'
+            
+            # Key (Legend)
+            script += 'set key on\n' if sub_plot_vars['show_legend'].get() else 'set key off\n'
+
+            # Ranges
+            x_range = sub_plot_vars['x_range']; y_range = sub_plot_vars['y_range']
+            if x_range['mode'].get() == 'manual' and x_range['min'].get() and x_range['max'].get(): script += f"set xrange [{x_range['min'].get()}:{x_range['max'].get()}]\n"
+            else: script += "set autoscale x\n"
+            if y_range['mode'].get() == 'manual' and y_range['min'].get() and y_range['max'].get(): script += f"set yrange [{y_range['min'].get()}:{y_range['max'].get()}]\n"
+            else: script += "set autoscale y\n"
+
+            # Labels and Logscale
+            script += f'set xlabel "Time"\n'
+            script += f'set ylabel "{sub_plot_vars["y_label"].get()}"\n'
+            if sub_plot_vars['y_log'].get(): script += 'set logscale y\n'
+            
+            # Plot clauses
             listbox = sub_plot_vars['listbox']
             selected_indices = listbox.curselection()
-            
-            y_label = sub_plot_vars['y_label'].get()
-            y_log = sub_plot_vars['y_log'].get()
-
-            script += f'\n# Subplot {i+1}\n'
-            script += f'set xlabel "Time"\n'
-            script += f'set ylabel "{y_label}"\n'
-            if y_log: script += 'set logscale y\n'
-            
             if selected_indices:
                 has_plot = True
                 plot_clauses = []
                 for index in selected_indices:
                     col_name = listbox.get(index)
-                    # Gnuplot needs quotes around column names with special characters
-                    plot_clauses.append(f"'{temp_file}' using \"Time\":\"{col_name}\" with lines title \"{col_name}\"")
-                
+                    legend_title = col_name.replace('_', '-')
+                    plot_clauses.append(f"'{temp_file}' using \"Time\":\"{col_name}\" with lines title \"{legend_title}\"")
                 script += "plot " + ", ".join(plot_clauses) + "\n"
-            else: # Empty plot
+            else: 
                 script += "plot [0:1][0:1] -1 with lines notitle\n"
 
-            if y_log: script += 'unset logscale y\n' # Reset for next plot
+            # Unset settings for next plot
+            if sub_plot_vars['y_log'].get(): script += 'unset logscale y\n'
 
         if not has_plot:
             messagebox.showinfo("Info", "No columns selected for plotting in any sub-plot.")
             return None, None
 
-        script += "\nunset multiplot\nunset grid\n"
+        script += "\nunset multiplot\nunset grid\nset key on\n"
         return script, None
 
     def generate_gnuplot_script(self, widgets, key, terminal_config):
@@ -1130,17 +1227,45 @@ class GnuplotApp:
             self._on_clean_data_toggle(widgets)
         
     def start_replot(self, widgets, key):
-        self.stop_replot(widgets); self.auto_replotting = True; widgets['start_button'].config(state="disabled"); widgets['stop_button'].config(state="normal"); self.auto_replot_loop(widgets, key)
+        mode = widgets['mode'].get()
+        if mode == 'Normal':
+            start_button = widgets['start_button']
+            stop_button = widgets['stop_button']
+        else:
+            start_button = widgets['logfile_start_button']
+            stop_button = widgets['logfile_stop_button']
+
+        self.stop_replot(widgets)
+        self.auto_replotting = True
+        start_button.config(state="disabled")
+        stop_button.config(state="normal")
+        self.auto_replot_loop(widgets, key)
+
     def stop_replot(self, widgets):
+        mode = widgets['mode'].get()
+        if mode == 'Normal':
+            start_button = widgets['start_button']
+            stop_button = widgets['stop_button']
+        else:
+            start_button = widgets['logfile_start_button']
+            stop_button = widgets['logfile_stop_button']
+
         self.auto_replotting = False
-        if self.active_auto_replot_job: self.root.after_cancel(self.active_auto_replot_job); self.active_auto_replot_job = None
-        widgets['start_button'].config(state="normal"); widgets['stop_button'].config(state="disabled")
+        if self.active_auto_replot_job: 
+            self.root.after_cancel(self.active_auto_replot_job)
+            self.active_auto_replot_job = None
+        
+        start_button.config(state="normal")
+        stop_button.config(state="disabled")
 
     def auto_replot_loop(self, widgets, key):
         if self.auto_replotting:
             self.plot(widgets, key)
             try: 
-                interval = int(widgets['replot_interval'].get())
+                mode = widgets['mode'].get()
+                interval_var = widgets['replot_interval'] if mode == 'Normal' else widgets['logfile_replot_interval']
+                interval = int(interval_var.get())
+
                 if interval <= 0:
                     messagebox.showwarning("Invalid Interval", "Auto-replot interval must be a positive number.")
                     self.stop_replot(widgets)
@@ -1186,11 +1311,15 @@ class GnuplotApp:
                     'path': widgets['logfile_path'].get(),
                     'subplot_y_labels': [v['y_label'].get() for v in widgets['subplot_vars']],
                     'subplot_y_logs': [v['y_log'].get() for v in widgets['subplot_vars']],
+                    'subplot_show_legends': [v['show_legend'].get() for v in widgets['subplot_vars']],
+                    'subplot_x_ranges': [{'mode': v['x_range']['mode'].get(), 'min': v['x_range']['min'].get(), 'max': v['x_range']['max'].get()} for v in widgets['subplot_vars']],
+                    'subplot_y_ranges': [{'mode': v['y_range']['mode'].get(), 'min': v['y_range']['min'].get(), 'max': v['y_range']['max'].get()} for v in widgets['subplot_vars']],
                     'subplot_selections': [v['listbox'].curselection() for v in widgets['subplot_vars']],
                     'margins': [
                         widgets['logfile_lmargin'].get(), widgets['logfile_rmargin'].get(),
                         widgets['logfile_bmargin'].get(), widgets['logfile_tmargin'].get()
                     ],
+                    'spacing': [widgets['logfile_xspacing'].get(), widgets['logfile_yspacing'].get()],
                     'grid_on': widgets['logfile_grid_on'].get(),
                     'grid_style': widgets['logfile_grid_style'].get()
                 }
@@ -1269,36 +1398,48 @@ class GnuplotApp:
             if logfile_settings:
                 widgets['logfile_path'].set(logfile_settings.get('path', ''))
                 
-                # Restore labels and logs
                 subplot_y_labels = logfile_settings.get('subplot_y_labels', [])
                 subplot_y_logs = logfile_settings.get('subplot_y_logs', [])
+                subplot_show_legends = logfile_settings.get('subplot_show_legends', [])
+                subplot_x_ranges = logfile_settings.get('subplot_x_ranges', [])
+                subplot_y_ranges = logfile_settings.get('subplot_y_ranges', [])
+
                 for j in range(4):
                     if j < len(subplot_y_labels): widgets['subplot_vars'][j]['y_label'].set(subplot_y_labels[j])
                     if j < len(subplot_y_logs): widgets['subplot_vars'][j]['y_log'].set(subplot_y_logs[j])
+                    if j < len(subplot_show_legends): widgets['subplot_vars'][j]['show_legend'].set(subplot_show_legends[j])
+                    if j < len(subplot_x_ranges):
+                        widgets['subplot_vars'][j]['x_range']['mode'].set(subplot_x_ranges[j].get('mode', 'auto'))
+                        widgets['subplot_vars'][j]['x_range']['min'].set(subplot_x_ranges[j].get('min', ''))
+                        widgets['subplot_vars'][j]['x_range']['max'].set(subplot_x_ranges[j].get('max', ''))
+                    if j < len(subplot_y_ranges):
+                        widgets['subplot_vars'][j]['y_range']['mode'].set(subplot_y_ranges[j].get('mode', 'auto'))
+                        widgets['subplot_vars'][j]['y_range']['min'].set(subplot_y_ranges[j].get('min', ''))
+                        widgets['subplot_vars'][j]['y_range']['max'].set(subplot_y_ranges[j].get('max', ''))
 
-                # Restore margins and grid
+
                 margins = logfile_settings.get('margins', ['0.1', '0.9', '0.1', '0.9'])
                 widgets['logfile_lmargin'].set(margins[0]); widgets['logfile_rmargin'].set(margins[1])
                 widgets['logfile_bmargin'].set(margins[2]); widgets['logfile_tmargin'].set(margins[3])
+                
+                spacing = logfile_settings.get('spacing', ['0.08', '0.08'])
+                widgets['logfile_xspacing'].set(spacing[0]); widgets['logfile_yspacing'].set(spacing[1])
+
                 widgets['logfile_grid_on'].set(logfile_settings.get('grid_on', True))
                 widgets['logfile_grid_style'].set(logfile_settings.get('grid_style', 'Medium'))
                 
-                # Re-parse file and then apply selections
                 if widgets['logfile_path'].get():
                     self._parse_logfile(widgets, new_key)
-                    # Restore selections
                     subplot_selections = logfile_settings.get('subplot_selections', [])
                     for j, sel in enumerate(subplot_selections):
                         if j < 4:
                             for index in sel:
                                 widgets['subplot_vars'][j]['listbox'].selection_set(index)
 
-            # Restore mode and UI view
             mode = tab_data.get('mode', "Normal")
             widgets['mode'].set(mode)
             self._switch_mode(widgets)
             
-            # Common updates
             self._on_separator_change(widgets)
             self.update_range_entry_state(widgets)
             self.update_margin_entry_state(widgets)
