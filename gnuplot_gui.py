@@ -147,7 +147,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V24.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V25.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -508,6 +508,8 @@ class GnuplotApp:
         subplot_config_frame.pack(fill='x', pady=5, expand=True)
         
         widgets['subplot_vars'] = []
+        plot_callback = lambda event=None, w=widgets, k=key: self.plot(w, k)
+        
         for i in range(4):
             title = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"][i]
             
@@ -520,19 +522,20 @@ class GnuplotApp:
             
             y_label_var = tk.StringVar()
             ttk.Label(top_frame, text="Y-Axis Label:").pack(side='left')
-            ttk.Entry(top_frame, textvariable=y_label_var, width=20).pack(side='left', fill='x', expand=True, padx=5)
+            y_label_entry = ttk.Entry(top_frame, textvariable=y_label_var, width=20)
+            y_label_entry.pack(side='left', fill='x', expand=True, padx=5)
+            y_label_entry.bind("<Return>", plot_callback)
             
             y_log_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(top_frame, text="Y Log", variable=y_log_var).pack(side='left', padx=5)
+            ttk.Checkbutton(top_frame, text="Y Log", variable=y_log_var, command=plot_callback).pack(side='left', padx=5)
 
             show_legend_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(top_frame, text="Show Legend", variable=show_legend_var).pack(side='left', padx=5)
+            ttk.Checkbutton(top_frame, text="Show Legend", variable=show_legend_var, command=plot_callback).pack(side='left', padx=5)
             
             # --- Row 1 & 2: Axis Ranges ---
             range_frame = ttk.Frame(sub_frame); range_frame.pack(fill='x', pady=5)
             
-            # Helper to create range controls
-            def create_range_controls(parent, axis_name, row):
+            def create_range_controls(parent, axis_name, row, plot_cb):
                 ttk.Label(parent, text=f"{axis_name}-Axis Range:").grid(row=row, column=0, sticky="w")
                 range_mode_var = tk.StringVar(value='auto')
                 min_var = tk.StringVar(); max_var = tk.StringVar()
@@ -544,17 +547,24 @@ class GnuplotApp:
                     state = 'normal' if range_mode_var.get() == 'manual' else 'disabled'
                     min_entry.config(state=state)
                     max_entry.config(state=state)
+                
+                def update_and_plot():
+                    update_state()
+                    plot_cb()
 
-                ttk.Radiobutton(parent, text="Auto", variable=range_mode_var, value='auto', command=update_state).grid(row=row, column=1, sticky="w")
-                ttk.Radiobutton(parent, text="Manual:", variable=range_mode_var, value='manual', command=update_state).grid(row=row, column=2, sticky="w")
+                ttk.Radiobutton(parent, text="Auto", variable=range_mode_var, value='auto', command=update_and_plot).grid(row=row, column=1, sticky="w")
+                ttk.Radiobutton(parent, text="Manual:", variable=range_mode_var, value='manual', command=update_and_plot).grid(row=row, column=2, sticky="w")
                 min_entry.grid(row=row, column=3, padx=2)
                 ttk.Label(parent, text="to").grid(row=row, column=4, padx=2)
                 max_entry.grid(row=row, column=5, padx=2)
+                
+                min_entry.bind("<Return>", plot_cb)
+                max_entry.bind("<Return>", plot_cb)
 
                 return {'mode': range_mode_var, 'min': min_var, 'max': max_var}
 
-            x_range_vars = create_range_controls(range_frame, 'X', 0)
-            y_range_vars = create_range_controls(range_frame, 'Y', 1)
+            x_range_vars = create_range_controls(range_frame, 'X', 0, plot_callback)
+            y_range_vars = create_range_controls(range_frame, 'Y', 1, plot_callback)
 
             # --- Row 3: Column Selection Listbox ---
             ttk.Label(sub_frame, text="Y-Axis Columns:").pack(anchor='w', pady=(5,0))
@@ -563,6 +573,7 @@ class GnuplotApp:
             listbox.pack(side='left', fill='both', expand=True)
             list_scroll = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview); list_scroll.pack(side='right', fill='y')
             listbox.config(yscrollcommand=list_scroll.set)
+            listbox.bind("<<ListboxSelect>>", plot_callback)
 
             widgets['subplot_vars'].append({
                 'y_label': y_label_var, 
