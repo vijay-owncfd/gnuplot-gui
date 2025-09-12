@@ -120,32 +120,30 @@ class LogfileParser:
         try:
             with open(self.filepath, 'r') as f:
                 lines = f.readlines()
+                byte_offset = f.tell()
             
             records = self.parse_lines(lines)
 
             if not records:
-                return None, "No data could be parsed. Check the logfile format."
+                return None, "No data could be parsed. Check the logfile format.", 0
 
-            # Create dataframe from all found records. Pandas handles missing keys by creating NaNs.
             df = pd.DataFrame.from_records(records)
-            # Forward fill to propagate values for variables that are not printed at every time step.
             df = df.ffill()
             df = df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
             
             if 'Time' not in df.columns or df.empty:
-                 return None, "Parsing resulted in an empty dataset or 'Time' column is missing."
+                 return None, "Parsing resulted in an empty dataset or 'Time' column is missing.", 0
 
-            return df, None, len(lines)
+            return df, None, byte_offset
 
         except Exception as e:
             return None, f"An error occurred during parsing: {e}", 0
-
 
 # --- Main Application Class ---
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V26.6") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V27.1") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -526,7 +524,7 @@ class GnuplotApp:
         logfile_action_frame.pack(fill='x', pady=5)
         
         logfile_main_action_frame = ttk.Frame(logfile_action_frame); logfile_main_action_frame.pack(pady=2)
-        ttk.Button(logfile_main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.plot(w, k)).pack()
+        ttk.Button(logfile_main_action_frame, text="Plot / Refresh", command=lambda w=widgets, k=key: self.refresh_and_plot(w, k)).pack()
         
         logfile_replot_frame = ttk.Frame(logfile_action_frame); logfile_replot_frame.pack(pady=2)
         widgets['logfile_replot_interval'] = tk.StringVar(value='1000')
@@ -646,7 +644,7 @@ class GnuplotApp:
             'log_viewer_frame': log_viewer_frame,
             'temp_file_path': None,
             'logfile_df': None,
-            'parsed_line_count': 0,
+            'parsed_byte_offset': 0,
             'logfile_columns': [],
             'stop_tailing': threading.Event(),
             'tail_thread': None,
@@ -765,17 +763,28 @@ class GnuplotApp:
         # Reschedule check
         tab_data['logfile_monitor_job'] = self.root.after(2000, lambda: self._wait_for_logfile_data(widgets, key, filepath, checks_done + 1))
 
+    def _downcast_dataframe(self, df):
+        """Downcast numeric columns of a DataFrame to save memory."""
+        for col in df.columns:
+            if df[col].dtype == 'float64':
+                df[col] = pd.to_numeric(df[col], downcast='float')
+            elif df[col].dtype == 'int64':
+                df[col] = pd.to_numeric(df[col], downcast='integer')
+        return df
+
     def _execute_full_parse(self, widgets, key, logfile_path, silent=False):
         parser = LogfileParser(logfile_path)
-        df, error, line_count = parser.parse()
+        df, error, byte_offset = parser.parse()
 
         if error:
             if not silent: messagebox.showerror("Parsing Error", error)
             return False
         
+        df = self._downcast_dataframe(df)
+        
         tab_data = self.tabs[key]
         tab_data['logfile_df'] = df
-        tab_data['parsed_line_count'] = line_count
+        tab_data['parsed_byte_offset'] = byte_offset
 
         if tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
             os.remove(tab_data['temp_file_path'])
@@ -786,6 +795,7 @@ class GnuplotApp:
         
         all_columns = [col for col in df.columns if col != 'Time']
         
+        # This logic should run whether silent or not, to populate listboxes
         residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
         other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
         sorted_cols = residual_cols + other_cols
@@ -794,13 +804,18 @@ class GnuplotApp:
         
         for i in range(4):
             listbox = widgets['subplot_vars'][i]['listbox']
+            # Preserve selection when repopulating list (useful for refresh)
+            selected = [listbox.get(idx) for idx in listbox.curselection()]
             listbox.delete(0, 'end')
             for col in sorted_cols:
                 listbox.insert('end', col)
-
-        self._start_log_tail(key, logfile_path)
+            # Re-apply selection if items still exist
+            for item in selected:
+                if item in sorted_cols:
+                    listbox.selection_set(sorted_cols.index(item))
 
         if not silent:
+            self._start_log_tail(key, logfile_path)
             messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
         return True
 
@@ -813,21 +828,23 @@ class GnuplotApp:
 
         try:
             with open(logfile_path, 'r') as f:
-                lines = f.readlines()
+                f.seek(tab_data['parsed_byte_offset'])
+                new_lines = f.readlines()
+                new_offset = f.tell()
             
-            new_line_count = len(lines)
-            if new_line_count <= tab_data['parsed_line_count']:
+            if not new_lines:
                 return True # Nothing new to parse
 
-            new_lines = lines[tab_data['parsed_line_count']:]
-            
             parser = LogfileParser()
             new_records = parser.parse_lines(new_lines)
 
             if not new_records:
-                return True # No parsable new records
+                # Still update byte offset even if no records found, to avoid re-reading
+                tab_data['parsed_byte_offset'] = new_offset
+                return True
 
             new_df = pd.DataFrame.from_records(new_records)
+            new_df = self._downcast_dataframe(new_df)
             
             # Combine with existing data
             combined_df = pd.concat([tab_data['logfile_df'], new_df], ignore_index=True)
@@ -836,7 +853,7 @@ class GnuplotApp:
             
             # Update tab data
             tab_data['logfile_df'] = combined_df
-            tab_data['parsed_line_count'] = new_line_count
+            tab_data['parsed_byte_offset'] = new_offset
 
             # Overwrite temp file
             with open(tab_data['temp_file_path'], 'w', newline='') as tmpfile:
@@ -1130,6 +1147,11 @@ class GnuplotApp:
             unset output
         """
         return script, data_to_pipe
+
+    def refresh_and_plot(self, widgets, key):
+        """Used by the manual refresh button in logfile mode."""
+        self._execute_incremental_parse(key)
+        self.plot(widgets, key)
 
     def plot(self, widgets, key):
         width, height = self.tabs[key]['plot_width'], self.tabs[key]['plot_height']
@@ -1468,8 +1490,6 @@ class GnuplotApp:
         if self.auto_replotting:
             mode = widgets['mode'].get()
             
-            replot_callback = lambda: self.plot(widgets, key)
-            
             # If in logfile mode, incrementally parse before plotting
             if mode == "Plot Logfile":
                 if not self._execute_incremental_parse(key):
@@ -1477,7 +1497,7 @@ class GnuplotApp:
                     self.stop_replot(widgets)
                     return
             
-            replot_callback()
+            self.plot(widgets, key)
             
             try: 
                 interval_var = widgets['replot_interval'] if mode == 'Normal' else widgets['logfile_replot_interval']
