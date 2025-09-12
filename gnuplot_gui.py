@@ -129,7 +129,7 @@ class LogfileParser:
             # Create dataframe from all found records. Pandas handles missing keys by creating NaNs.
             df = pd.DataFrame.from_records(records)
             # Forward fill to propagate values for variables that are not printed at every time step.
-            df = df.fillna(method='ffill')
+            df = df.ffill()
             df = df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
             
             if 'Time' not in df.columns or df.empty:
@@ -145,7 +145,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V26.3") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V26.6") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -592,7 +592,10 @@ class GnuplotApp:
                 min_entry.bind("<Return>", plot_cb)
                 max_entry.bind("<Return>", plot_cb)
 
-                return {'mode': range_mode_var, 'min': min_var, 'max': max_var}
+                return {
+                    'mode': range_mode_var, 'min': min_var, 'max': max_var,
+                    'min_entry': min_entry, 'max_entry': max_entry
+                }
 
             x_range_vars = create_range_controls(range_frame, 'X', 0, plot_callback)
             y_range_vars = create_range_controls(range_frame, 'Y', 1, plot_callback)
@@ -783,24 +786,21 @@ class GnuplotApp:
         
         all_columns = [col for col in df.columns if col != 'Time']
         
-        if not silent:
-            residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
-            other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
-            sorted_cols = residual_cols + other_cols
-            
-            tab_data['logfile_columns'] = ['Time'] + sorted_cols
-            
-            for i in range(4):
-                listbox = widgets['subplot_vars'][i]['listbox']
-                selected = [listbox.get(i) for i in listbox.curselection()]
-                listbox.delete(0, 'end')
-                for col in sorted_cols:
-                    listbox.insert('end', col)
-                for item in selected:
-                    if item in sorted_cols:
-                        listbox.selection_set(sorted_cols.index(item))
+        residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
+        other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
+        sorted_cols = residual_cols + other_cols
         
-            self._start_log_tail(key, logfile_path)
+        tab_data['logfile_columns'] = ['Time'] + sorted_cols
+        
+        for i in range(4):
+            listbox = widgets['subplot_vars'][i]['listbox']
+            listbox.delete(0, 'end')
+            for col in sorted_cols:
+                listbox.insert('end', col)
+
+        self._start_log_tail(key, logfile_path)
+
+        if not silent:
             messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
         return True
 
@@ -831,7 +831,7 @@ class GnuplotApp:
             
             # Combine with existing data
             combined_df = pd.concat([tab_data['logfile_df'], new_df], ignore_index=True)
-            combined_df = combined_df.fillna(method='ffill')
+            combined_df = combined_df.ffill()
             combined_df = combined_df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
             
             # Update tab data
@@ -1518,10 +1518,16 @@ class GnuplotApp:
             widgets = tab_info['widgets']
             paned_window = tab_info['paned_window']
             
+            plot_sash_pos = 0
+            try:
+                plot_sash_pos = tab_info['plot_display_panedwindow'].sashpos(0)
+            except (tk.TclError, KeyError): # Handle case where sash might not exist
+                plot_sash_pos = int(paned_window.winfo_height() * 0.8)
+
             tab_data = {
                 'tab_title': self.notebook.tab(tab_id, 'text'), 
                 'sash_position': paned_window.sashpos(0),
-                'plot_sash_position': tab_info['plot_display_panedwindow'].sashpos(0),
+                'plot_sash_position': plot_sash_pos,
                 'mode': widgets['mode'].get(),
                 'settings': {}, 
                 'datasets': [],
@@ -1623,17 +1629,32 @@ class GnuplotApp:
                 subplot_y_ranges = logfile_settings.get('subplot_y_ranges', [])
 
                 for j in range(4):
+                    # Restore labels and checkboxes
                     if j < len(subplot_y_labels): widgets['subplot_vars'][j]['y_label'].set(subplot_y_labels[j])
                     if j < len(subplot_y_logs): widgets['subplot_vars'][j]['y_log'].set(subplot_y_logs[j])
                     if j < len(subplot_show_legends): widgets['subplot_vars'][j]['show_legend'].set(subplot_show_legends[j])
+                    
+                    # Restore X-axis range settings and UI state
                     if j < len(subplot_x_ranges):
-                        widgets['subplot_vars'][j]['x_range']['mode'].set(subplot_x_ranges[j].get('mode', 'auto'))
-                        widgets['subplot_vars'][j]['x_range']['min'].set(subplot_x_ranges[j].get('min', ''))
-                        widgets['subplot_vars'][j]['x_range']['max'].set(subplot_x_ranges[j].get('max', ''))
+                        x_range_data = subplot_x_ranges[j]
+                        x_range_vars = widgets['subplot_vars'][j]['x_range']
+                        x_range_vars['mode'].set(x_range_data.get('mode', 'auto'))
+                        x_range_vars['min'].set(x_range_data.get('min', ''))
+                        x_range_vars['max'].set(x_range_data.get('max', ''))
+                        state = 'normal' if x_range_vars['mode'].get() == 'manual' else 'disabled'
+                        x_range_vars['min_entry'].config(state=state)
+                        x_range_vars['max_entry'].config(state=state)
+
+                    # Restore Y-axis range settings and UI state
                     if j < len(subplot_y_ranges):
-                        widgets['subplot_vars'][j]['y_range']['mode'].set(subplot_y_ranges[j].get('mode', 'auto'))
-                        widgets['subplot_vars'][j]['y_range']['min'].set(subplot_y_ranges[j].get('min', ''))
-                        widgets['subplot_vars'][j]['y_range']['max'].set(subplot_y_ranges[j].get('max', ''))
+                        y_range_data = subplot_y_ranges[j]
+                        y_range_vars = widgets['subplot_vars'][j]['y_range']
+                        y_range_vars['mode'].set(y_range_data.get('mode', 'auto'))
+                        y_range_vars['min'].set(y_range_data.get('min', ''))
+                        y_range_vars['max'].set(y_range_data.get('max', ''))
+                        state = 'normal' if y_range_vars['mode'].get() == 'manual' else 'disabled'
+                        y_range_vars['min_entry'].config(state=state)
+                        y_range_vars['max_entry'].config(state=state)
 
 
                 margins = logfile_settings.get('margins', ['0.1', '0.9', '0.1', '0.9'])
@@ -1647,12 +1668,12 @@ class GnuplotApp:
                 widgets['logfile_grid_style'].set(logfile_settings.get('grid_style', 'Medium'))
                 
                 if widgets['logfile_path'].get():
-                    self._execute_full_parse(widgets, new_key)
-                    subplot_selections = logfile_settings.get('subplot_selections', [])
-                    for j, sel in enumerate(subplot_selections):
-                        if j < 4:
-                            for index in sel:
-                                widgets['subplot_vars'][j]['listbox'].selection_set(index)
+                    if self._execute_full_parse(widgets, new_key, widgets['logfile_path'].get(), silent=True):
+                        subplot_selections = logfile_settings.get('subplot_selections', [])
+                        for j, sel in enumerate(subplot_selections):
+                            if j < 4:
+                                for index in sel:
+                                    widgets['subplot_vars'][j]['listbox'].selection_set(index)
 
             mode = tab_data.get('mode', "Normal")
             widgets['mode'].set(mode)
