@@ -19,10 +19,12 @@ import json
 import re
 import pandas as pd
 from tempfile import NamedTemporaryFile
+import threading
+import queue
 
 # --- Logfile Parser Class ---
 class LogfileParser:
-    def __init__(self, filepath):
+    def __init__(self, filepath=None):
         self.filepath = filepath
         # Regex to find the main time steps
         self.time_re = re.compile(r"^\s*Time = (\S+)\s*$")
@@ -47,107 +49,103 @@ class LogfileParser:
         name = name.strip('_')
         return name
 
-    def parse(self):
+    def parse_lines(self, lines):
+        """Parses a list of string lines and returns a list of record dictionaries."""
         records = []
         current_record = {}
         
+        for line in lines:
+            # Check for a new time step
+            time_match = self.time_re.match(line)
+            if time_match:
+                if current_record: # Save the previous record if it exists
+                    records.append(current_record)
+                current_record = {'Time': float(time_match.group(1))}
+                continue
+
+            if not current_record: # Skip lines before the first "Time ="
+                continue
+
+            # Skip continuity error lines to avoid creating unnecessary columns
+            if "time step continuity errors" in line:
+                continue
+                
+            # Check for solver lines
+            solver_match = self.solver_re.search(line)
+            if solver_match:
+                var, i_res, f_res, iters = solver_match.groups()
+                current_record[f'{var}_initial_residual'] = float(i_res)
+                # Final residual is ignored as requested
+                continue # Move to next line after match
+            
+            # Check for function object lines (vector or scalar)
+            line_stripped = line.strip()
+
+            # Try vector match first, as its pattern is more specific
+            vector_match = self.fo_vector_re.match(line_stripped)
+            if vector_match:
+                name_raw, values_str = vector_match.groups()
+                # Exclude solver lines which can sometimes match this regex
+                if "Solving for" not in name_raw:
+                    name = self._clean_column_name(name_raw)
+                    try:
+                        values = [float(v) for v in values_str.split()]
+                        current_record[f'{name}_x'] = values[0]
+                        if len(values) > 1: current_record[f'{name}_y'] = values[1]
+                        if len(values) > 2: current_record[f'{name}_z'] = values[2]
+                    except (ValueError, IndexError):
+                        pass # Ignore if values are not numbers
+                continue
+            
+            # Then try scalar match
+            scalar_match = self.fo_scalar_re.match(line_stripped)
+            if scalar_match:
+                name_raw, val_str = scalar_match.groups()
+                # Exclude solver lines
+                if "Solving for" not in name_raw:
+                    try:
+                        val = float(val_str)
+                        name = self._clean_column_name(name_raw)
+                        current_record[name] = val
+                    except (ValueError, TypeError):
+                        pass
+                continue
+
+        if current_record: # Append the last record
+            records.append(current_record)
+            
+        return records
+
+    def parse(self):
         try:
             with open(self.filepath, 'r') as f:
-                for line in f:
-                    # Check for a new time step
-                    time_match = self.time_re.match(line)
-                    if time_match:
-                        if current_record: # Save the previous record if it exists
-                            records.append(current_record)
-                        current_record = {'Time': float(time_match.group(1))}
-                        continue
-
-                    if not current_record: # Skip lines before the first "Time ="
-                        continue
-
-                    # Skip continuity error lines to avoid creating unnecessary columns
-                    if "time step continuity errors" in line:
-                        continue
-                        
-                    # Check for solver lines
-                    solver_match = self.solver_re.search(line)
-                    if solver_match:
-                        var, i_res, f_res, iters = solver_match.groups()
-                        current_record[f'{var}_initial_residual'] = float(i_res)
-                        # Final residual is ignored as requested
-                        continue # Move to next line after match
-                    
-                    # Check for function object lines (vector or scalar)
-                    line_stripped = line.strip()
-
-                    # Try vector match first, as its pattern is more specific
-                    vector_match = self.fo_vector_re.match(line_stripped)
-                    if vector_match:
-                        name_raw, values_str = vector_match.groups()
-                        # Exclude solver lines which can sometimes match this regex
-                        if "Solving for" not in name_raw:
-                            name = self._clean_column_name(name_raw)
-                            try:
-                                values = [float(v) for v in values_str.split()]
-                                current_record[f'{name}_x'] = values[0]
-                                if len(values) > 1: current_record[f'{name}_y'] = values[1]
-                                if len(values) > 2: current_record[f'{name}_z'] = values[2]
-                            except (ValueError, IndexError):
-                                pass # Ignore if values are not numbers
-                        continue
-                    
-                    # Then try scalar match
-                    scalar_match = self.fo_scalar_re.match(line_stripped)
-                    if scalar_match:
-                        name_raw, val_str = scalar_match.groups()
-                        # Exclude solver lines
-                        if "Solving for" not in name_raw:
-                            try:
-                                val = float(val_str)
-                                name = self._clean_column_name(name_raw)
-                                current_record[name] = val
-                            except (ValueError, TypeError):
-                                # This will safely ignore lines where the value has non-numeric parts (e.g., '12.98 s')
-                                pass
-                        continue
-
-            if current_record: # Append the last record
-                records.append(current_record)
+                lines = f.readlines()
+            
+            records = self.parse_lines(lines)
 
             if not records:
                 return None, "No data could be parsed. Check the logfile format."
 
-            # --- Filter for common columns ---
-            if len(records) > 1:
-                # Get the intersection of keys present in all records
-                common_keys = set(records[0].keys())
-                for record in records[1:]:
-                    common_keys.intersection_update(record.keys())
-                
-                # Filter records to only include common keys
-                filtered_records = []
-                for record in records:
-                    filtered_records.append({k: record.get(k) for k in common_keys})
-                records = filtered_records
-
+            # Create dataframe from all found records. Pandas handles missing keys by creating NaNs.
             df = pd.DataFrame.from_records(records)
-            df = df.fillna(method='ffill') # Forward fill to handle missing values
+            # Forward fill to propagate values for variables that are not printed at every time step.
+            df = df.fillna(method='ffill')
             df = df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
             
             if 'Time' not in df.columns or df.empty:
                  return None, "Parsing resulted in an empty dataset or 'Time' column is missing."
 
-            return df, None
+            return df, None, len(lines)
 
         except Exception as e:
-            return None, f"An error occurred during parsing: {e}"
+            return None, f"An error occurred during parsing: {e}", 0
 
 
 # --- Main Application Class ---
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V25.0") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V26.3") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -156,6 +154,8 @@ class GnuplotApp:
         self.tabs = {}
         self.tab_counter = 0
         self.right_clicked_tab_id = None
+        
+        self.log_queue = queue.Queue()
 
         self.menu_bar = tk.Menu(self.root)
         self.file_menu = tk.Menu(self.menu_bar, tearoff=0)
@@ -175,6 +175,7 @@ class GnuplotApp:
         self.tab_menu.add_command(label="Rename Tab", command=self.rename_tab_popup)
         self.notebook.bind("<Button-3>", self.show_tab_menu)
 
+        # --- Corrected Initialization ---
         self.tab_counter += 1
         first_title = f"Plot {self.tab_counter}"
         first_key = f"tab{self.tab_counter}"
@@ -185,15 +186,19 @@ class GnuplotApp:
         self.notebook.add(self.plus_tab_frame, text='+')
         
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        self._process_log_queue()
 
     def _on_closing(self):
         response = messagebox.askyesnocancel("Quit", "Do you want to save your session before quitting?")
         
         if response is True:
-            if self.save_session():
-                self.root.destroy()
-        elif response is False:
-            self.root.destroy()
+            if not self.save_session():
+                return
+        elif response is None:
+            return
+
+        for key in list(self.tabs.keys()):
+            self._stop_log_tail(key)
         
         # Clean up temporary files
         for tab_data in self.tabs.values():
@@ -202,6 +207,7 @@ class GnuplotApp:
                     os.remove(tab_data['temp_file_path'])
                 except OSError as e:
                     print(f"Error removing temporary file: {e}")
+        self.root.destroy()
 
     def show_tab_menu(self, event):
         try:
@@ -250,6 +256,8 @@ class GnuplotApp:
             messagebox.showwarning("Action Blocked", "Cannot close the last plot tab.")
             return
         
+        self._stop_log_tail(key)
+
         tab_data = self.tabs.get(key)
         if tab_data and tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
              try:
@@ -267,12 +275,26 @@ class GnuplotApp:
             if selected_tab_text == '+': self.add_new_tab()
         except tk.TclError: pass
             
-    def _switch_mode(self, widgets):
+    def _switch_mode(self, widgets, key):
         mode = widgets['mode'].get()
+        tab_data = self.tabs[key]
+        plot_display_panedwindow = tab_data['plot_display_panedwindow']
+        log_viewer_id = str(tab_data['log_viewer_frame'])
+
         if mode == "Normal":
+            if log_viewer_id in plot_display_panedwindow.panes():
+                plot_display_panedwindow.forget(log_viewer_id)
+            self._stop_log_tail(key)
             widgets['logfile_mode_frame'].pack_forget()
             widgets['normal_mode_frame'].pack(fill='x', expand=True)
         else: # Plot Logfile
+            if log_viewer_id not in plot_display_panedwindow.panes():
+                 plot_display_panedwindow.add(tab_data['log_viewer_frame'], weight=1)
+            
+            self.root.update_idletasks()
+            sash_pos = int(plot_display_panedwindow.winfo_height() * 0.8) if plot_display_panedwindow.winfo_height() > 1 else 300
+            plot_display_panedwindow.sashpos(0, sash_pos)
+
             widgets['normal_mode_frame'].pack_forget()
             widgets['logfile_mode_frame'].pack(fill='x', expand=True)
 
@@ -311,16 +333,25 @@ class GnuplotApp:
         canvas.bind('<Enter>', _bind_mousewheel)
         canvas.bind('<Leave>', _unbind_mousewheel)
         
-        plot_frame = ttk.Frame(paned_window, padding="10")
-        paned_window.add(plot_frame, weight=2)
+        # --- NEW: Vertical PanedWindow for Plot and Log ---
+        plot_display_panedwindow = ttk.PanedWindow(paned_window, orient='vertical')
+        paned_window.add(plot_display_panedwindow, weight=2)
+        
+        plot_image_frame = ttk.Frame(plot_display_panedwindow, padding="10")
+        plot_display_panedwindow.add(plot_image_frame, weight=4) # 80% weight
+
+        log_viewer_frame = ttk.LabelFrame(plot_display_panedwindow, text="Log File Output (tail -f)", padding=10)
+        # Initially add it, but it will be hidden/shown by _switch_mode
+        plot_display_panedwindow.add(log_viewer_frame, weight=1) # 20% weight
+
         widgets = {}
         
         # --- Mode Selection ---
         mode_frame = ttk.LabelFrame(controls_frame, text="Mode", padding=10)
         mode_frame.pack(fill='x', pady=5)
         widgets['mode'] = tk.StringVar(value="Normal")
-        ttk.Radiobutton(mode_frame, text="Normal", variable=widgets['mode'], value="Normal", command=lambda w=widgets: self._switch_mode(w)).pack(side='left', padx=5)
-        ttk.Radiobutton(mode_frame, text="Plot Logfile", variable=widgets['mode'], value="Plot Logfile", command=lambda w=widgets: self._switch_mode(w)).pack(side='left', padx=5)
+        ttk.Radiobutton(mode_frame, text="Normal", variable=widgets['mode'], value="Normal", command=lambda w=widgets, k=key: self._switch_mode(w, k)).pack(side='left', padx=5)
+        ttk.Radiobutton(mode_frame, text="Plot Logfile", variable=widgets['mode'], value="Plot Logfile", command=lambda w=widgets, k=key: self._switch_mode(w, k)).pack(side='left', padx=5)
 
         # --- Frame Containers for Modes ---
         widgets['normal_mode_frame'] = ttk.Frame(controls_frame)
@@ -588,10 +619,18 @@ class GnuplotApp:
         ttk.Separator(controls_frame).pack(fill='x', pady=10)
         ttk.Button(controls_frame, text="Close Tab", command=lambda k=key: self.close_tab(k)).pack()
         
-        export_frame = ttk.Frame(plot_frame); export_frame.pack(side='bottom', fill='x', pady=5)
+        # --- Plot and Log Viewer Widgets ---
+        export_frame = ttk.Frame(plot_image_frame); export_frame.pack(side='bottom', fill='x', pady=5)
         ttk.Button(export_frame, text="Save Plot...", command=lambda w=widgets, k=key: self.save_plot(w, k)).pack(side='left', padx=5)
         ttk.Button(export_frame, text="Copy to Clipboard", command=lambda w=widgets, k=key: self.copy_plot_to_clipboard(w, k)).pack(side='left', padx=5)
-        widgets['plot_label'] = ttk.Label(plot_frame, text="Plot will appear here...", anchor='center'); widgets['plot_label'].pack(expand=True, fill='both')
+        widgets['plot_label'] = ttk.Label(plot_image_frame, text="Plot will appear here...", anchor='center'); widgets['plot_label'].pack(expand=True, fill='both')
+        
+        log_text = tk.Text(log_viewer_frame, wrap='word', height=10, state='disabled')
+        log_scroll = ttk.Scrollbar(log_viewer_frame, orient='vertical', command=log_text.yview)
+        log_text.config(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side='right', fill='y')
+        log_text.pack(side='left', fill='both', expand=True)
+        widgets['log_text_widget'] = log_text
         
         tab_data = {
             'widgets': widgets, 
@@ -600,14 +639,71 @@ class GnuplotApp:
             'resize_job': None, 
             'frame': tab_frame,
             'paned_window': paned_window,
+            'plot_display_panedwindow': plot_display_panedwindow,
+            'log_viewer_frame': log_viewer_frame,
             'temp_file_path': None,
-            'logfile_columns': []
+            'logfile_df': None,
+            'parsed_line_count': 0,
+            'logfile_columns': [],
+            'stop_tailing': threading.Event(),
+            'tail_thread': None,
+            'logfile_monitor_job': None
         }
-        plot_frame.bind("<Configure>", lambda event, k=key: self.on_plot_resize(event, k))
+        plot_image_frame.bind("<Configure>", lambda event, k=key: self.on_plot_resize(event, k))
         self.tabs[key] = tab_data
         
-        self._switch_mode(widgets) # Set initial view
+        self._switch_mode(widgets, key) # Set initial view
         return tab_frame
+
+    def _start_log_tail(self, key, filepath):
+        self._stop_log_tail(key) # Stop any previous thread
+        
+        tab_data = self.tabs[key]
+        tab_data['stop_tailing'].clear()
+        
+        thread = threading.Thread(
+            target=self._tail_worker, 
+            args=(filepath, self.log_queue, key, tab_data['stop_tailing']),
+            daemon=True
+        )
+        thread.start()
+        tab_data['tail_thread'] = thread
+
+    def _stop_log_tail(self, key):
+        if key in self.tabs:
+            tab_data = self.tabs[key]
+            if tab_data.get('tail_thread') and tab_data['tail_thread'].is_alive():
+                tab_data['stop_tailing'].set()
+            if tab_data.get('logfile_monitor_job'):
+                self.root.after_cancel(tab_data['logfile_monitor_job'])
+                tab_data['logfile_monitor_job'] = None
+    
+    @staticmethod
+    def _tail_worker(filepath, q, key, stop_event):
+        try:
+            with open(filepath, 'r') as f:
+                f.seek(0, 2) # Go to the end of the file
+                while not stop_event.is_set():
+                    line = f.readline()
+                    if line:
+                        q.put((key, line))
+                    else:
+                        time.sleep(0.1) # Wait for new lines
+        except Exception as e:
+            print(f"Error in tail worker for {key}: {e}")
+
+    def _process_log_queue(self):
+        try:
+            while not self.log_queue.empty():
+                key, line = self.log_queue.get_nowait()
+                if key in self.tabs:
+                    text_widget = self.tabs[key]['widgets']['log_text_widget']
+                    text_widget.config(state='normal')
+                    text_widget.insert('end', line)
+                    text_widget.see('end')
+                    text_widget.config(state='disabled')
+        finally:
+            self.root.after(100, self._process_log_queue)
 
     def _browse_logfile(self, widgets):
         filename = filedialog.askopenfilename(title="Select a log file", filetypes=(("Log files", "*.log"), ("All files", "*.*")))
@@ -616,19 +712,68 @@ class GnuplotApp:
 
     def _parse_logfile(self, widgets, key):
         logfile_path = widgets['logfile_path'].get()
-        if not logfile_path:
-            messagebox.showwarning("No File", "Please select a logfile first.")
+        if not logfile_path or not os.path.exists(logfile_path):
+            messagebox.showwarning("No File", "Please select a valid logfile first.")
             return
 
-        parser = LogfileParser(logfile_path)
-        df, error = parser.parse()
+        # --- New logic to wait for file to populate ---
+        with open(logfile_path, 'r') as f:
+            time_blocks = [line for line in f if re.match(r"^\s*Time = (\S+)\s*$", line)]
+        
+        if len(time_blocks) < 2:
+            self._wait_for_logfile_data(widgets, key, logfile_path, 0)
+        else:
+            self._execute_full_parse(widgets, key, logfile_path)
 
-        if error:
-            messagebox.showerror("Parsing Error", error)
+    def _wait_for_logfile_data(self, widgets, key, filepath, checks_done):
+        tab_data = self.tabs[key]
+        
+        # Stop previous monitor if any
+        if tab_data.get('logfile_monitor_job'):
+            self.root.after_cancel(tab_data['logfile_monitor_job'])
+
+        if checks_done == 0:
+            messagebox.showinfo("Monitoring Logfile", "Logfile has fewer than two 'Time' blocks. Monitoring for changes...")
+            tab_data['last_mtime'] = os.path.getmtime(filepath)
+            tab_data['stale_time'] = 0
+
+        try:
+            current_mtime = os.path.getmtime(filepath)
+            if current_mtime == tab_data['last_mtime']:
+                tab_data['stale_time'] += 2
+                if tab_data['stale_time'] >= 20:
+                    messagebox.showwarning("Logfile Stalled", "The logfile has not changed for 20 seconds. Please check your simulation.")
+                    return
+            else:
+                tab_data['last_mtime'] = current_mtime
+                tab_data['stale_time'] = 0
+
+            with open(filepath, 'r') as f:
+                time_blocks = [line for line in f if re.match(r"^\s*Time = (\S+)\s*$", line)]
+            
+            if len(time_blocks) >= 2:
+                self._execute_full_parse(widgets, key, filepath)
+                return
+
+        except FileNotFoundError:
+            messagebox.showerror("Error", f"Logfile not found: {filepath}")
             return
         
-        # Save to a temporary file
+        # Reschedule check
+        tab_data['logfile_monitor_job'] = self.root.after(2000, lambda: self._wait_for_logfile_data(widgets, key, filepath, checks_done + 1))
+
+    def _execute_full_parse(self, widgets, key, logfile_path, silent=False):
+        parser = LogfileParser(logfile_path)
+        df, error, line_count = parser.parse()
+
+        if error:
+            if not silent: messagebox.showerror("Parsing Error", error)
+            return False
+        
         tab_data = self.tabs[key]
+        tab_data['logfile_df'] = df
+        tab_data['parsed_line_count'] = line_count
+
         if tab_data.get('temp_file_path') and os.path.exists(tab_data['temp_file_path']):
             os.remove(tab_data['temp_file_path'])
         
@@ -636,22 +781,72 @@ class GnuplotApp:
             df.to_csv(tmpfile, index=False)
             tab_data['temp_file_path'] = tmpfile.name
         
-        # Sort columns for user-friendly display
         all_columns = [col for col in df.columns if col != 'Time']
-        residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
-        other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
-        sorted_cols = residual_cols + other_cols
         
-        tab_data['logfile_columns'] = ['Time'] + sorted_cols
+        if not silent:
+            residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
+            other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
+            sorted_cols = residual_cols + other_cols
+            
+            tab_data['logfile_columns'] = ['Time'] + sorted_cols
+            
+            for i in range(4):
+                listbox = widgets['subplot_vars'][i]['listbox']
+                selected = [listbox.get(i) for i in listbox.curselection()]
+                listbox.delete(0, 'end')
+                for col in sorted_cols:
+                    listbox.insert('end', col)
+                for item in selected:
+                    if item in sorted_cols:
+                        listbox.selection_set(sorted_cols.index(item))
         
-        # Populate listboxes
-        for i in range(4):
-            listbox = widgets['subplot_vars'][i]['listbox']
-            listbox.delete(0, 'end') # Clear previous entries
-            for col in sorted_cols:
-                listbox.insert('end', col)
+            self._start_log_tail(key, logfile_path)
+            messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
+        return True
 
-        messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
+    def _execute_incremental_parse(self, key):
+        tab_data = self.tabs[key]
+        logfile_path = tab_data['widgets']['logfile_path'].get()
+
+        if not logfile_path or not os.path.exists(logfile_path):
+            return False
+
+        try:
+            with open(logfile_path, 'r') as f:
+                lines = f.readlines()
+            
+            new_line_count = len(lines)
+            if new_line_count <= tab_data['parsed_line_count']:
+                return True # Nothing new to parse
+
+            new_lines = lines[tab_data['parsed_line_count']:]
+            
+            parser = LogfileParser()
+            new_records = parser.parse_lines(new_lines)
+
+            if not new_records:
+                return True # No parsable new records
+
+            new_df = pd.DataFrame.from_records(new_records)
+            
+            # Combine with existing data
+            combined_df = pd.concat([tab_data['logfile_df'], new_df], ignore_index=True)
+            combined_df = combined_df.fillna(method='ffill')
+            combined_df = combined_df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
+            
+            # Update tab data
+            tab_data['logfile_df'] = combined_df
+            tab_data['parsed_line_count'] = new_line_count
+
+            # Overwrite temp file
+            with open(tab_data['temp_file_path'], 'w', newline='') as tmpfile:
+                combined_df.to_csv(tmpfile, index=False)
+
+            return True
+
+        except Exception as e:
+            print(f"Error during incremental parse: {e}")
+            return False
 
     def _on_separator_change(self, widgets):
         if widgets['separator'].get() == ',':
@@ -1271,9 +1466,20 @@ class GnuplotApp:
 
     def auto_replot_loop(self, widgets, key):
         if self.auto_replotting:
-            self.plot(widgets, key)
+            mode = widgets['mode'].get()
+            
+            replot_callback = lambda: self.plot(widgets, key)
+            
+            # If in logfile mode, incrementally parse before plotting
+            if mode == "Plot Logfile":
+                if not self._execute_incremental_parse(key):
+                    # Stop replotting if silent parse fails (e.g., file deleted)
+                    self.stop_replot(widgets)
+                    return
+            
+            replot_callback()
+            
             try: 
-                mode = widgets['mode'].get()
                 interval_var = widgets['replot_interval'] if mode == 'Normal' else widgets['logfile_replot_interval']
                 interval = int(interval_var.get())
 
@@ -1315,6 +1521,7 @@ class GnuplotApp:
             tab_data = {
                 'tab_title': self.notebook.tab(tab_id, 'text'), 
                 'sash_position': paned_window.sashpos(0),
+                'plot_sash_position': tab_info['plot_display_panedwindow'].sashpos(0),
                 'mode': widgets['mode'].get(),
                 'settings': {}, 
                 'datasets': [],
@@ -1440,7 +1647,7 @@ class GnuplotApp:
                 widgets['logfile_grid_style'].set(logfile_settings.get('grid_style', 'Medium'))
                 
                 if widgets['logfile_path'].get():
-                    self._parse_logfile(widgets, new_key)
+                    self._execute_full_parse(widgets, new_key)
                     subplot_selections = logfile_settings.get('subplot_selections', [])
                     for j, sel in enumerate(subplot_selections):
                         if j < 4:
@@ -1449,7 +1656,7 @@ class GnuplotApp:
 
             mode = tab_data.get('mode', "Normal")
             widgets['mode'].set(mode)
-            self._switch_mode(widgets)
+            self._switch_mode(widgets, new_key)
             
             self._on_separator_change(widgets)
             self.update_range_entry_state(widgets)
@@ -1457,10 +1664,15 @@ class GnuplotApp:
             self.update_aspect_ratio_entry_state(widgets)
             self.plot(widgets, new_key)
             
+            self.root.update_idletasks()
             sash_pos = tab_data.get('sash_position')
             if sash_pos:
-                self.root.update_idletasks()
                 tab_info['paned_window'].sashpos(0, sash_pos)
+            
+            plot_sash_pos = tab_data.get('plot_sash_position')
+            if plot_sash_pos:
+                 tab_info['plot_display_panedwindow'].sashpos(0, plot_sash_pos)
+
 
         self.notebook.select(0)
 
