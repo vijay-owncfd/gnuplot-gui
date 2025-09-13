@@ -22,6 +22,61 @@ from tempfile import NamedTemporaryFile
 import threading
 import queue
 
+# --- Column Selector Dialog ---
+class ColumnSelectorDialog(tk.Toplevel):
+    def __init__(self, parent, all_columns):
+        super().__init__(parent)
+        self.title("Select Columns to Monitor")
+        self.result = None
+        self.all_columns = sorted(all_columns)
+
+        self.transient(parent)
+        self.grab_set()
+        
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill='both', expand=True)
+
+        ttk.Label(main_frame, text="Select the columns you want to monitor:", wraplength=380).pack(pady=(0, 10))
+
+        list_frame = ttk.Frame(main_frame)
+        list_frame.pack(fill='both', expand=True)
+        
+        self.listbox = tk.Listbox(list_frame, selectmode='multiple', height=15, exportselection=False)
+        for col in self.all_columns:
+            self.listbox.insert('end', col)
+        
+        list_scroll_y = ttk.Scrollbar(list_frame, orient='vertical', command=self.listbox.yview)
+        list_scroll_x = ttk.Scrollbar(list_frame, orient='horizontal', command=self.listbox.xview)
+        self.listbox.config(yscrollcommand=list_scroll_y.set, xscrollcommand=list_scroll_x.set)
+
+        list_scroll_y.pack(side='right', fill='y')
+        list_scroll_x.pack(side='bottom', fill='x')
+        self.listbox.pack(side='left', fill='both', expand=True)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=10)
+
+        ttk.Button(button_frame, text="Select All", command=self.select_all).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Deselect All", command=self.deselect_all).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="OK", command=self.on_ok).pack(side='right', padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.wait_window(self)
+
+    def on_ok(self):
+        self.result = [self.listbox.get(i) for i in self.listbox.curselection()]
+        self.destroy()
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
+    def select_all(self):
+        self.listbox.selection_set(0, 'end')
+
+    def deselect_all(self):
+        self.listbox.selection_clear(0, 'end')
+
 # --- Logfile Parser Class ---
 class LogfileParser:
     def __init__(self, filepath=None):
@@ -49,10 +104,13 @@ class LogfileParser:
         name = name.strip('_')
         return name
 
-    def parse_lines(self, lines):
+    def parse_lines(self, lines, monitored_columns=None):
         """Parses a list of string lines and returns a list of record dictionaries."""
         records = []
         current_record = {}
+        
+        # Using a set for faster lookups if a filter is provided
+        monitored_set = set(monitored_columns) if monitored_columns else None
         
         for line in lines:
             # Check for a new time step
@@ -74,8 +132,9 @@ class LogfileParser:
             solver_match = self.solver_re.search(line)
             if solver_match:
                 var, i_res, f_res, iters = solver_match.groups()
-                current_record[f'{var}_initial_residual'] = float(i_res)
-                # Final residual is ignored as requested
+                col_name = f'{var}_initial_residual'
+                if monitored_set is None or col_name in monitored_set:
+                    current_record[col_name] = float(i_res)
                 continue # Move to next line after match
             
             # Check for function object lines (vector or scalar)
@@ -90,9 +149,12 @@ class LogfileParser:
                     name = self._clean_column_name(name_raw)
                     try:
                         values = [float(v) for v in values_str.split()]
-                        current_record[f'{name}_x'] = values[0]
-                        if len(values) > 1: current_record[f'{name}_y'] = values[1]
-                        if len(values) > 2: current_record[f'{name}_z'] = values[2]
+                        if monitored_set is None or f'{name}_x' in monitored_set:
+                            current_record[f'{name}_x'] = values[0]
+                        if len(values) > 1 and (monitored_set is None or f'{name}_y' in monitored_set):
+                            current_record[f'{name}_y'] = values[1]
+                        if len(values) > 2 and (monitored_set is None or f'{name}_z' in monitored_set):
+                            current_record[f'{name}_z'] = values[2]
                     except (ValueError, IndexError):
                         pass # Ignore if values are not numbers
                 continue
@@ -103,12 +165,13 @@ class LogfileParser:
                 name_raw, val_str = scalar_match.groups()
                 # Exclude solver lines
                 if "Solving for" not in name_raw:
-                    try:
-                        val = float(val_str)
-                        name = self._clean_column_name(name_raw)
-                        current_record[name] = val
-                    except (ValueError, TypeError):
-                        pass
+                    name = self._clean_column_name(name_raw)
+                    if monitored_set is None or name in monitored_set:
+                        try:
+                            val = float(val_str)
+                            current_record[name] = val
+                        except (ValueError, TypeError):
+                            pass
                 continue
 
         if current_record: # Append the last record
@@ -143,7 +206,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V27.4") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V28.0") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -690,6 +753,7 @@ class GnuplotApp:
             'logfile_df': None,
             'parsed_byte_offset': 0,
             'logfile_columns': [],
+            'monitored_columns': None, # New: To store user's selection
             'stop_tailing': threading.Event(),
             'tail_thread': None,
             'logfile_monitor_job': None
@@ -772,7 +836,7 @@ class GnuplotApp:
         with open(logfile_path, 'r') as f:
             time_blocks = [line for line in f if re.match(r"^\s*Time = (\S+)\s*$", line)]
         
-        if len(time_blocks) < 2:
+        if len(time_blocks) < 3:
             self._wait_for_logfile_data(widgets, key, logfile_path, 0)
         else:
             self._execute_full_parse(widgets, key, logfile_path)
@@ -785,7 +849,7 @@ class GnuplotApp:
             self.root.after_cancel(tab_data['logfile_monitor_job'])
 
         if checks_done == 0:
-            messagebox.showinfo("Monitoring Logfile", "Logfile has fewer than two 'Time' blocks. Monitoring for changes...")
+            messagebox.showinfo("Monitoring Logfile", "Logfile has fewer than three 'Time' blocks. Monitoring for changes...")
             tab_data['last_mtime'] = os.path.getmtime(filepath)
             tab_data['stale_time'] = 0
 
@@ -803,7 +867,7 @@ class GnuplotApp:
             with open(filepath, 'r') as f:
                 time_blocks = [line for line in f if re.match(r"^\s*Time = (\S+)\s*$", line)]
             
-            if len(time_blocks) >= 2:
+            if len(time_blocks) >= 3:
                 self._execute_full_parse(widgets, key, filepath)
                 return
 
@@ -826,14 +890,28 @@ class GnuplotApp:
     def _execute_full_parse(self, widgets, key, logfile_path, silent=False):
         parser = LogfileParser(logfile_path)
         df, error, byte_offset = parser.parse()
+        tab_data = self.tabs[key]
 
         if error:
             if not silent: messagebox.showerror("Parsing Error", error)
             return False
         
         df = self._downcast_dataframe(df)
+        all_columns = [col for col in df.columns if col != 'Time']
+
+        # --- New Column Selection Step ---
+        if tab_data.get('monitored_columns') is None:
+            dialog = ColumnSelectorDialog(self.root, all_columns)
+            monitored_columns = dialog.result
+            if monitored_columns is None: # User cancelled
+                return False
+            tab_data['monitored_columns'] = monitored_columns
+        else: # Use columns loaded from session
+            monitored_columns = tab_data['monitored_columns']
         
-        tab_data = self.tabs[key]
+        # Filter the dataframe based on selection
+        df = df[['Time'] + [col for col in monitored_columns if col in df.columns]]
+
         tab_data['logfile_df'] = df
         tab_data['parsed_byte_offset'] = byte_offset
 
@@ -844,40 +922,35 @@ class GnuplotApp:
             df.to_csv(tmpfile, index=False)
             tab_data['temp_file_path'] = tmpfile.name
         
-        all_columns = [col for col in df.columns if col != 'Time']
-        
-        # This logic should run whether silent or not, to populate listboxes
-        residual_cols = sorted([c for c in all_columns if 'initial_residual' in c])
-        other_cols = sorted([c for c in all_columns if 'initial_residual' not in c])
+        residual_cols = sorted([c for c in monitored_columns if 'initial_residual' in c])
+        other_cols = sorted([c for c in monitored_columns if 'initial_residual' not in c])
         sorted_cols = residual_cols + other_cols
         
-        tab_data['logfile_columns'] = ['Time'] + sorted_cols
+        tab_data['logfile_columns'] = sorted_cols
         
         for i in range(4):
             listbox = widgets['subplot_vars'][i]['listbox']
-            # Preserve selection when repopulating list (useful for refresh)
             selected = [listbox.get(idx) for idx in listbox.curselection()]
             listbox.delete(0, 'end')
             for col in sorted_cols:
                 listbox.insert('end', col)
-            # Re-apply selection if items still exist
             for item in selected:
                 try:
                     idx = sorted_cols.index(item)
                     listbox.selection_set(idx)
                 except ValueError:
-                    pass # Item no longer exists, do nothing
+                    pass
 
         if not silent:
             self._start_log_tail(key, logfile_path)
-            messagebox.showinfo("Success", f"Logfile parsed successfully.\nFound {len(df)} time steps and {len(df.columns)} columns.")
+            messagebox.showinfo("Success", f"Logfile parsed successfully. Monitoring {len(monitored_columns)} columns.")
         return True
 
     def _execute_incremental_parse(self, key):
         tab_data = self.tabs[key]
         logfile_path = tab_data['widgets']['logfile_path'].get()
 
-        if not logfile_path or not os.path.exists(logfile_path):
+        if not logfile_path or not os.path.exists(logfile_path) or tab_data.get('monitored_columns') is None:
             return False
 
         try:
@@ -890,26 +963,22 @@ class GnuplotApp:
                 return True # Nothing new to parse
 
             parser = LogfileParser()
-            new_records = parser.parse_lines(new_lines)
+            new_records = parser.parse_lines(new_lines, monitored_columns=tab_data['monitored_columns'])
 
             if not new_records:
-                # Still update byte offset even if no records found, to avoid re-reading
                 tab_data['parsed_byte_offset'] = new_offset
                 return True
 
             new_df = pd.DataFrame.from_records(new_records)
             new_df = self._downcast_dataframe(new_df)
             
-            # Combine with existing data
             combined_df = pd.concat([tab_data['logfile_df'], new_df], ignore_index=True)
             combined_df = combined_df.ffill()
             combined_df = combined_df.sort_values(by='Time').drop_duplicates(subset='Time', keep='last')
             
-            # Update tab data
             tab_data['logfile_df'] = combined_df
             tab_data['parsed_byte_offset'] = new_offset
 
-            # Overwrite temp file
             with open(tab_data['temp_file_path'], 'w', newline='') as tmpfile:
                 combined_df.to_csv(tmpfile, index=False)
 
@@ -1607,6 +1676,7 @@ class GnuplotApp:
                 'datasets': [],
                 'logfile_settings': {
                     'path': widgets['logfile_path'].get(),
+                    'monitored_columns': tab_info.get('monitored_columns'),
                     'subplot_y_labels': [v['y_label'].get() for v in widgets['subplot_vars']],
                     'subplot_y_logs': [v['y_log'].get() for v in widgets['subplot_vars']],
                     'subplot_show_legends': [v['show_legend'].get() for v in widgets['subplot_vars']],
@@ -1695,7 +1765,8 @@ class GnuplotApp:
             logfile_settings = tab_data.get('logfile_settings', {})
             if logfile_settings:
                 widgets['logfile_path'].set(logfile_settings.get('path', ''))
-                
+                tab_info['monitored_columns'] = logfile_settings.get('monitored_columns')
+
                 subplot_y_labels = logfile_settings.get('subplot_y_labels', [])
                 subplot_y_logs = logfile_settings.get('subplot_y_logs', [])
                 subplot_show_legends = logfile_settings.get('subplot_show_legends', [])
