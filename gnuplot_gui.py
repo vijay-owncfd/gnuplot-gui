@@ -143,7 +143,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V27.1") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V27.2") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -344,6 +344,9 @@ class GnuplotApp:
 
         widgets = {}
         
+        # Define plot_callback early
+        plot_callback = lambda event=None, w=widgets, k=key: self.plot(w, k)
+        
         # --- Mode Selection ---
         mode_frame = ttk.LabelFrame(controls_frame, text="Mode", padding=10)
         mode_frame.pack(fill='x', pady=5)
@@ -379,19 +382,18 @@ class GnuplotApp:
         
         font_frame = ttk.LabelFrame(normal_frame, text="Font Sizes", padding=10)
         font_frame.pack(fill='x', pady=5)
-        plot_cmd = lambda: self.plot(widgets, key)
-
+        
         ttk.Label(font_frame, text="Title:").grid(row=0, column=0, sticky='w')
         widgets['title_font_size'] = tk.StringVar(value='14')
-        ttk.Spinbox(font_frame, from_=8, to=36, increment=1, textvariable=widgets['title_font_size'], width=5, command=plot_cmd).grid(row=0, column=1, sticky='w')
+        ttk.Spinbox(font_frame, from_=8, to=36, increment=1, textvariable=widgets['title_font_size'], width=5, command=plot_callback).grid(row=0, column=1, sticky='w')
         
         ttk.Label(font_frame, text="Axes:").grid(row=0, column=2, sticky='w', padx=(10, 0))
         widgets['axes_font_size'] = tk.StringVar(value='12')
-        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['axes_font_size'], width=5, command=plot_cmd).grid(row=0, column=3, sticky='w')
+        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['axes_font_size'], width=5, command=plot_callback).grid(row=0, column=3, sticky='w')
 
         ttk.Label(font_frame, text="Legend:").grid(row=0, column=4, sticky='w', padx=(10, 0))
         widgets['legend_font_size'] = tk.StringVar(value='12')
-        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['legend_font_size'], width=5, command=plot_cmd).grid(row=0, column=5, sticky='w')
+        ttk.Spinbox(font_frame, from_=8, to=24, increment=1, textvariable=widgets['legend_font_size'], width=5, command=plot_callback).grid(row=0, column=5, sticky='w')
 
         dataset_frame = ttk.LabelFrame(normal_frame, text="Datasets", padding=10); dataset_frame.pack(fill='x', pady=5)
         columns = ("file", "x_col", "y_col", "axis", "style", "title", "clean")
@@ -455,19 +457,19 @@ class GnuplotApp:
         widgets['tmargin'] = tk.StringVar(value='2')
         widgets['bmargin'] = tk.StringVar(value='5')
         
-        lmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['lmargin'], width=7, state='disabled', command=plot_cmd)
+        lmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['lmargin'], width=7, state='disabled', command=plot_callback)
         lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['lmargin_entry'] = lmargin_spinbox
         ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w')
 
-        rmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['rmargin'], width=7, state='disabled', command=plot_cmd)
+        rmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['rmargin'], width=7, state='disabled', command=plot_callback)
         rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['rmargin_entry'] = rmargin_spinbox
         ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w')
 
-        tmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['tmargin'], width=7, state='disabled', command=plot_cmd)
+        tmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['tmargin'], width=7, state='disabled', command=plot_callback)
         tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['tmargin_entry'] = tmargin_spinbox
         ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w')
 
-        bmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['bmargin'], width=7, state='disabled', command=plot_cmd)
+        bmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['bmargin'], width=7, state='disabled', command=plot_callback)
         bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['bmargin_entry'] = bmargin_spinbox
         ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w')
         
@@ -502,22 +504,51 @@ class GnuplotApp:
         logfile_layout_frame = ttk.LabelFrame(logfile_frame, text="Layout, Margins & Grid", padding=10)
         logfile_layout_frame.pack(fill='x', pady=5)
         
-        ttk.Label(logfile_layout_frame, text="Margins (L,R,B,T):").grid(row=0, column=0, sticky='w', pady=2)
+        # --- Margins ---
+        ttk.Label(logfile_layout_frame, text="Margins:").grid(row=0, column=0, sticky='w', rowspan=2)
+        
+        ttk.Label(logfile_layout_frame, text="Left").grid(row=0, column=1, sticky='s', padx=2)
+        ttk.Label(logfile_layout_frame, text="Right").grid(row=0, column=2, sticky='s', padx=2)
+        ttk.Label(logfile_layout_frame, text="Bottom").grid(row=0, column=3, sticky='s', padx=2)
+        ttk.Label(logfile_layout_frame, text="Top").grid(row=0, column=4, sticky='s', padx=2)
+
         widgets['logfile_lmargin'] = tk.StringVar(value='0.1'); widgets['logfile_rmargin'] = tk.StringVar(value='0.9'); widgets['logfile_bmargin'] = tk.StringVar(value='0.1'); widgets['logfile_tmargin'] = tk.StringVar(value='0.9')
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_lmargin'], width=5).grid(row=0, column=1, padx=2)
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_rmargin'], width=5).grid(row=0, column=2, padx=2)
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_bmargin'], width=5).grid(row=0, column=3, padx=2)
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_tmargin'], width=5).grid(row=0, column=4, padx=2)
+        
+        lmargin_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_lmargin'], width=5, command=plot_callback)
+        lmargin_spin.grid(row=1, column=1, padx=2)
+        lmargin_spin.bind("<Return>", plot_callback)
+        
+        rmargin_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_rmargin'], width=5, command=plot_callback)
+        rmargin_spin.grid(row=1, column=2, padx=2)
+        rmargin_spin.bind("<Return>", plot_callback)
 
-        ttk.Label(logfile_layout_frame, text="Spacing (X, Y):").grid(row=1, column=0, sticky='w', pady=2)
+        bmargin_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_bmargin'], width=5, command=plot_callback)
+        bmargin_spin.grid(row=1, column=3, padx=2)
+        bmargin_spin.bind("<Return>", plot_callback)
+        
+        tmargin_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.05, textvariable=widgets['logfile_tmargin'], width=5, command=plot_callback)
+        tmargin_spin.grid(row=1, column=4, padx=2)
+        tmargin_spin.bind("<Return>", plot_callback)
+
+        # --- Spacing ---
+        ttk.Label(logfile_layout_frame, text="Spacing (X, Y):").grid(row=2, column=0, sticky='w', pady=(5,2))
         widgets['logfile_xspacing'] = tk.StringVar(value='0.08'); widgets['logfile_yspacing'] = tk.StringVar(value='0.08')
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_xspacing'], width=5).grid(row=1, column=1, padx=2)
-        ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_yspacing'], width=5).grid(row=1, column=2, padx=2)
 
-        ttk.Label(logfile_layout_frame, text="Grid:").grid(row=2, column=0, sticky='w', pady=2)
+        xspacing_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_xspacing'], width=5, command=plot_callback)
+        xspacing_spin.grid(row=2, column=1, padx=2)
+        xspacing_spin.bind("<Return>", plot_callback)
+
+        yspacing_spin = ttk.Spinbox(logfile_layout_frame, from_=0.0, to=1.0, increment=0.01, textvariable=widgets['logfile_yspacing'], width=5, command=plot_callback)
+        yspacing_spin.grid(row=2, column=2, padx=2)
+        yspacing_spin.bind("<Return>", plot_callback)
+
+        # --- Grid ---
+        ttk.Label(logfile_layout_frame, text="Grid:").grid(row=3, column=0, sticky='w', pady=2)
         widgets['logfile_grid_on'] = tk.BooleanVar(value=True); widgets['logfile_grid_style'] = tk.StringVar(value='Medium')
-        ttk.Checkbutton(logfile_layout_frame, text="On", variable=widgets['logfile_grid_on']).grid(row=2, column=1, sticky='w')
-        ttk.Combobox(logfile_layout_frame, textvariable=widgets['logfile_grid_style'], values=['Light', 'Medium', 'Dark'], width=8).grid(row=2, column=2, columnspan=2, sticky='w')
+        ttk.Checkbutton(logfile_layout_frame, text="On", variable=widgets['logfile_grid_on'], command=plot_callback).grid(row=3, column=1, sticky='w')
+        grid_combo = ttk.Combobox(logfile_layout_frame, textvariable=widgets['logfile_grid_style'], values=['Light', 'Medium', 'Dark'], width=8)
+        grid_combo.grid(row=3, column=2, columnspan=2, sticky='w')
+        grid_combo.bind("<<ComboboxSelected>>", plot_callback)
 
         # --- Logfile Mode Actions (Moved Up) ---
         logfile_action_frame = ttk.LabelFrame(logfile_frame, text="Plot Actions", padding=10)
@@ -537,7 +568,6 @@ class GnuplotApp:
         subplot_config_frame.pack(fill='x', pady=5, expand=True)
         
         widgets['subplot_vars'] = []
-        plot_callback = lambda event=None, w=widgets, k=key: self.plot(w, k)
         
         for i in range(4):
             title = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"][i]
@@ -811,8 +841,11 @@ class GnuplotApp:
                 listbox.insert('end', col)
             # Re-apply selection if items still exist
             for item in selected:
-                if item in sorted_cols:
-                    listbox.selection_set(sorted_cols.index(item))
+                try:
+                    idx = sorted_cols.index(item)
+                    listbox.selection_set(idx)
+                except ValueError:
+                    pass # Item no longer exists, do nothing
 
         if not silent:
             self._start_log_tail(key, logfile_path)
@@ -1712,7 +1745,9 @@ class GnuplotApp:
             
             plot_sash_pos = tab_data.get('plot_sash_position')
             if plot_sash_pos:
-                 tab_info['plot_display_panedwindow'].sashpos(0, plot_sash_pos)
+                # Only set sashpos if there are multiple panes (i.e., the sash exists)
+                if len(tab_info['plot_display_panedwindow'].panes()) > 1:
+                    tab_info['plot_display_panedwindow'].sashpos(0, plot_sash_pos)
 
 
         self.notebook.select(0)
@@ -1721,5 +1756,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = GnuplotApp(root)
     root.mainloop()
+
 
 
