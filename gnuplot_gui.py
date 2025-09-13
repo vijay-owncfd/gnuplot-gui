@@ -143,7 +143,7 @@ class LogfileParser:
 class GnuplotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Embedded Gnuplot GUI V27.2") # Version bump!
+        self.root.title("Embedded Gnuplot GUI V27.4") # Version bump!
         self.root.geometry("1200x800")
         
         self.auto_replotting = False
@@ -363,6 +363,9 @@ class GnuplotApp:
         
         # --- NORMAL MODE WIDGETS ---
         normal_frame = widgets['normal_mode_frame']
+
+        # Define a callback for auto-updating datasets
+        update_callback = lambda event=None, w=widgets, k=key: self.update_dataset(w, k)
         
         global_settings_frame = ttk.LabelFrame(normal_frame, text="Global Plot & Data Settings", padding=10)
         global_settings_frame.pack(fill='x', pady=5)
@@ -378,7 +381,7 @@ class GnuplotApp:
         plot_global_title_entry = ttk.Entry(global_settings_frame, textvariable=widgets['plot_global_title'])
         plot_global_title_entry.grid(row=1, column=1, sticky='ew')
         global_settings_frame.columnconfigure(1, weight=1)
-        plot_global_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        plot_global_title_entry.bind("<Return>", plot_callback)
         
         font_frame = ttk.LabelFrame(normal_frame, text="Font Sizes", padding=10)
         font_frame.pack(fill='x', pady=5)
@@ -405,12 +408,23 @@ class GnuplotApp:
         widgets['tree'].bind("<Button-1>", lambda event, w=widgets, k=key: self.toggle_checkbox(event, w, k))
 
         editor_frame = ttk.LabelFrame(normal_frame, text="Dataset Editor", padding=10); editor_frame.pack(fill='x', pady=5)
-        widgets['filepath'] = tk.StringVar(); filepath_entry = ttk.Entry(editor_frame, textvariable=widgets['filepath'], width=25); filepath_entry.grid(row=0, column=1, sticky="ew", columnspan=3); filepath_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Data File:").grid(row=0, column=0, sticky="w", pady=2); ttk.Button(editor_frame, text="Browse...", command=lambda w=widgets: self.browse_file(w)).grid(row=0, column=4, padx=5)
-        widgets['x_col'] = tk.StringVar(value='1'); x_col_entry = ttk.Entry(editor_frame, textvariable=widgets['x_col'], width=5); x_col_entry.grid(row=1, column=1, sticky="w"); x_col_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="X Col:").grid(row=1, column=0, sticky="w", pady=2)
-        widgets['y_col'] = tk.StringVar(value='2'); y_col_entry = ttk.Entry(editor_frame, textvariable=widgets['y_col'], width=5); y_col_entry.grid(row=1, column=3, sticky="w"); y_col_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Y Col:").grid(row=1, column=2, sticky="e", pady=2, padx=5)
-        widgets['y_axis_select'] = tk.StringVar(value='Y1'); ttk.Label(editor_frame, text="Axis:").grid(row=1, column=4, sticky="e", padx=(10,2)); ttk.Combobox(editor_frame, textvariable=widgets['y_axis_select'], values=['Y1', 'Y2'], width=4).grid(row=1, column=5, sticky="w")
-        widgets['plot_style'] = tk.StringVar(value='lines'); ttk.Label(editor_frame, text="Plot Style:").grid(row=2, column=0, sticky="w", pady=2); ttk.Combobox(editor_frame, textvariable=widgets['plot_style'], values=['lines', 'points', 'linespoints', 'dots', 'impulses'], width=15).grid(row=2, column=1, sticky="ew", columnspan=2)
-        widgets['plot_title'] = tk.StringVar(); plot_title_entry = ttk.Entry(editor_frame, textvariable=widgets['plot_title'], width=20); plot_title_entry.grid(row=3, column=1, sticky="ew", columnspan=3); plot_title_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(editor_frame, text="Title:").grid(row=3, column=0, sticky="w", pady=2)
+        widgets['filepath'] = tk.StringVar(); filepath_entry = ttk.Entry(editor_frame, textvariable=widgets['filepath'], width=25); filepath_entry.grid(row=0, column=1, sticky="ew", columnspan=3); filepath_entry.bind("<Return>", plot_callback); ttk.Label(editor_frame, text="Data File:").grid(row=0, column=0, sticky="w", pady=2); ttk.Button(editor_frame, text="Browse...", command=lambda w=widgets: self.browse_file(w)).grid(row=0, column=4, padx=5)
+        
+        widgets['x_col'] = tk.StringVar(value='1'); x_col_entry = ttk.Entry(editor_frame, textvariable=widgets['x_col'], width=5); x_col_entry.grid(row=1, column=1, sticky="w"); x_col_entry.bind("<Return>", update_callback); ttk.Label(editor_frame, text="X Col:").grid(row=1, column=0, sticky="w", pady=2)
+        
+        widgets['y_col'] = tk.StringVar(value='2'); y_col_entry = ttk.Entry(editor_frame, textvariable=widgets['y_col'], width=5); y_col_entry.grid(row=1, column=3, sticky="w"); y_col_entry.bind("<Return>", update_callback); ttk.Label(editor_frame, text="Y Col:").grid(row=1, column=2, sticky="e", pady=2, padx=5)
+        
+        widgets['y_axis_select'] = tk.StringVar(value='Y1'); ttk.Label(editor_frame, text="Axis:").grid(row=1, column=4, sticky="e", padx=(10,2)); 
+        axis_combo = ttk.Combobox(editor_frame, textvariable=widgets['y_axis_select'], values=['Y1', 'Y2'], width=4)
+        axis_combo.grid(row=1, column=5, sticky="w")
+        axis_combo.bind("<<ComboboxSelected>>", update_callback)
+
+        widgets['plot_style'] = tk.StringVar(value='lines'); ttk.Label(editor_frame, text="Plot Style:").grid(row=2, column=0, sticky="w", pady=2); 
+        style_combo = ttk.Combobox(editor_frame, textvariable=widgets['plot_style'], values=['lines', 'points', 'linespoints', 'dots', 'impulses'], width=15)
+        style_combo.grid(row=2, column=1, sticky="ew", columnspan=2)
+        style_combo.bind("<<ComboboxSelected>>", update_callback)
+
+        widgets['plot_title'] = tk.StringVar(); plot_title_entry = ttk.Entry(editor_frame, textvariable=widgets['plot_title'], width=20); plot_title_entry.grid(row=3, column=1, sticky="ew", columnspan=3); plot_title_entry.bind("<Return>", update_callback); ttk.Label(editor_frame, text="Title:").grid(row=3, column=0, sticky="w", pady=2)
         
         options_frame = ttk.Frame(editor_frame); options_frame.grid(row=4, column=0, columnspan=6, sticky='w', pady=5)
         widgets['clean_data'] = tk.BooleanVar(value=False)
@@ -430,22 +444,22 @@ class GnuplotApp:
         widgets['remove_button'] = ttk.Button(dataset_actions_frame, text="Remove Selected", state="disabled", command=lambda w=widgets, k=key: self.remove_dataset(w, k)); widgets['remove_button'].pack(side='right')
 
         axis_frame = ttk.LabelFrame(normal_frame, text="Axes Settings", padding=10); axis_frame.pack(fill='x', pady=5)
-        widgets['xlabel'] = tk.StringVar(); xlabel_entry = ttk.Entry(axis_frame, textvariable=widgets['xlabel'], width=30); xlabel_entry.grid(row=0, column=1, columnspan=5, sticky="ew"); xlabel_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="X-Axis Title:").grid(row=0, column=0, sticky="w", pady=2)
-        widgets['ylabel'] = tk.StringVar(); ylabel_entry = ttk.Entry(axis_frame, textvariable=widgets['ylabel'], width=30); ylabel_entry.grid(row=1, column=1, columnspan=5, sticky="ew"); ylabel_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="Y1-Axis Title:").grid(row=1, column=0, sticky="w", pady=2)
-        widgets['y2label'] = tk.StringVar(); y2label_entry = ttk.Entry(axis_frame, textvariable=widgets['y2label'], width=30); y2label_entry.grid(row=2, column=1, columnspan=5, sticky="ew"); y2label_entry.bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="Y2-Axis Title:").grid(row=2, column=0, sticky="w", pady=2)
+        widgets['xlabel'] = tk.StringVar(); xlabel_entry = ttk.Entry(axis_frame, textvariable=widgets['xlabel'], width=30); xlabel_entry.grid(row=0, column=1, columnspan=5, sticky="ew"); xlabel_entry.bind("<Return>", plot_callback); ttk.Label(axis_frame, text="X-Axis Title:").grid(row=0, column=0, sticky="w", pady=2)
+        widgets['ylabel'] = tk.StringVar(); ylabel_entry = ttk.Entry(axis_frame, textvariable=widgets['ylabel'], width=30); ylabel_entry.grid(row=1, column=1, columnspan=5, sticky="ew"); ylabel_entry.bind("<Return>", plot_callback); ttk.Label(axis_frame, text="Y1-Axis Title:").grid(row=1, column=0, sticky="w", pady=2)
+        widgets['y2label'] = tk.StringVar(); y2label_entry = ttk.Entry(axis_frame, textvariable=widgets['y2label'], width=30); y2label_entry.grid(row=2, column=1, columnspan=5, sticky="ew"); y2label_entry.bind("<Return>", plot_callback); ttk.Label(axis_frame, text="Y2-Axis Title:").grid(row=2, column=0, sticky="w", pady=2)
         widgets['x_log'] = tk.BooleanVar(); widgets['y_log'] = tk.BooleanVar(); widgets['y2_log'] = tk.BooleanVar(); widgets['grid_on'] = tk.BooleanVar(value=True); widgets['grid_style'] = tk.StringVar(value='Medium')
         
         grid_frame = ttk.Frame(axis_frame); grid_frame.grid(row=3, column=0, columnspan=6, sticky='w', pady=5)
-        ttk.Checkbutton(grid_frame, text="X Log", variable=widgets['x_log'], command=lambda w=widgets, k=key: self.plot(w, k)).pack(side='left', padx=(0,10))
-        ttk.Checkbutton(grid_frame, text="Y1 Log", variable=widgets['y_log'], command=lambda w=widgets, k=key: self.plot(w, k)).pack(side='left', padx=(0,10))
-        ttk.Checkbutton(grid_frame, text="Y2 Log", variable=widgets['y2_log'], command=lambda w=widgets, k=key: self.plot(w, k)).pack(side='left', padx=(0,10))
+        ttk.Checkbutton(grid_frame, text="X Log", variable=widgets['x_log'], command=plot_callback).pack(side='left', padx=(0,10))
+        ttk.Checkbutton(grid_frame, text="Y1 Log", variable=widgets['y_log'], command=plot_callback).pack(side='left', padx=(0,10))
+        ttk.Checkbutton(grid_frame, text="Y2 Log", variable=widgets['y2_log'], command=plot_callback).pack(side='left', padx=(0,10))
         ttk.Checkbutton(grid_frame, text="Grid:", variable=widgets['grid_on'], command=lambda w=widgets, k=key: self.on_grid_toggle(w, k)).pack(side='left', padx=(20, 2))
-        widgets['grid_style_combo'] = ttk.Combobox(grid_frame, textvariable=widgets['grid_style'], values=['Light', 'Medium', 'Dark'], width=8, state='normal'); widgets['grid_style_combo'].pack(side='left'); widgets['grid_style_combo'].bind("<<ComboboxSelected>>", lambda event, w=widgets, k=key: self.plot(w, k))
+        widgets['grid_style_combo'] = ttk.Combobox(grid_frame, textvariable=widgets['grid_style'], values=['Light', 'Medium', 'Dark'], width=8, state='normal'); widgets['grid_style_combo'].pack(side='left'); widgets['grid_style_combo'].bind("<<ComboboxSelected>>", plot_callback)
         
         ttk.Separator(axis_frame).grid(row=4, column=0, columnspan=6, sticky='ew', pady=10)
-        ttk.Label(axis_frame, text="X-Axis Range:").grid(row=5, column=0, sticky="w"); widgets['x_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['x_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=5, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['x_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=5, column=2, sticky="w"); widgets['x_min'] = tk.StringVar(); widgets['x_max'] = tk.StringVar(); widgets['x_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['x_min'], width=8, state='disabled'); widgets['x_min_entry'].grid(row=5, column=3); widgets['x_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=5, column=4, padx=5); widgets['x_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['x_max'], width=8, state='disabled'); widgets['x_max_entry'].grid(row=5, column=5); widgets['x_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
-        ttk.Label(axis_frame, text="Y1-Axis Range:").grid(row=6, column=0, sticky="w"); widgets['y_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=2, sticky="w"); widgets['y_min'] = tk.StringVar(); widgets['y_max'] = tk.StringVar(); widgets['y_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_min'], width=8, state='disabled'); widgets['y_min_entry'].grid(row=6, column=3); widgets['y_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=6, column=4, padx=5); widgets['y_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_max'], width=8, state='disabled'); widgets['y_max_entry'].grid(row=6, column=5); widgets['y_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
-        ttk.Label(axis_frame, text="Y2-Axis Range:").grid(row=7, column=0, sticky="w"); widgets['y2_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y2_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y2_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=2, sticky="w"); widgets['y2_min'] = tk.StringVar(); widgets['y2_max'] = tk.StringVar(); widgets['y2_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_min'], width=8, state='disabled'); widgets['y2_min_entry'].grid(row=7, column=3); widgets['y2_min_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k)); ttk.Label(axis_frame, text="to").grid(row=7, column=4, padx=5); widgets['y2_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_max'], width=8, state='disabled'); widgets['y2_max_entry'].grid(row=7, column=5); widgets['y2_max_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        ttk.Label(axis_frame, text="X-Axis Range:").grid(row=5, column=0, sticky="w"); widgets['x_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['x_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=5, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['x_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=5, column=2, sticky="w"); widgets['x_min'] = tk.StringVar(); widgets['x_max'] = tk.StringVar(); widgets['x_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['x_min'], width=8, state='disabled'); widgets['x_min_entry'].grid(row=5, column=3); widgets['x_min_entry'].bind("<Return>", plot_callback); ttk.Label(axis_frame, text="to").grid(row=5, column=4, padx=5); widgets['x_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['x_max'], width=8, state='disabled'); widgets['x_max_entry'].grid(row=5, column=5); widgets['x_max_entry'].bind("<Return>", plot_callback)
+        ttk.Label(axis_frame, text="Y1-Axis Range:").grid(row=6, column=0, sticky="w"); widgets['y_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=6, column=2, sticky="w"); widgets['y_min'] = tk.StringVar(); widgets['y_max'] = tk.StringVar(); widgets['y_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_min'], width=8, state='disabled'); widgets['y_min_entry'].grid(row=6, column=3); widgets['y_min_entry'].bind("<Return>", plot_callback); ttk.Label(axis_frame, text="to").grid(row=6, column=4, padx=5); widgets['y_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y_max'], width=8, state='disabled'); widgets['y_max_entry'].grid(row=6, column=5); widgets['y_max_entry'].bind("<Return>", plot_callback)
+        ttk.Label(axis_frame, text="Y2-Axis Range:").grid(row=7, column=0, sticky="w"); widgets['y2_range_mode'] = tk.StringVar(value='auto'); ttk.Radiobutton(axis_frame, text="Auto", variable=widgets['y2_range_mode'], value='auto', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=1, sticky="w"); ttk.Radiobutton(axis_frame, text="Manual:", variable=widgets['y2_range_mode'], value='manual', command=lambda w=widgets: self.update_range_entry_state(w)).grid(row=7, column=2, sticky="w"); widgets['y2_min'] = tk.StringVar(); widgets['y2_max'] = tk.StringVar(); widgets['y2_min_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_min'], width=8, state='disabled'); widgets['y2_min_entry'].grid(row=7, column=3); widgets['y2_min_entry'].bind("<Return>", plot_callback); ttk.Label(axis_frame, text="to").grid(row=7, column=4, padx=5); widgets['y2_max_entry'] = ttk.Entry(axis_frame, textvariable=widgets['y2_max'], width=8, state='disabled'); widgets['y2_max_entry'].grid(row=7, column=5); widgets['y2_max_entry'].bind("<Return>", plot_callback)
 
         layout_frame = ttk.LabelFrame(normal_frame, text="Plot Layout & Margins", padding=10)
         layout_frame.pack(fill='x', pady=5)
@@ -458,19 +472,19 @@ class GnuplotApp:
         widgets['bmargin'] = tk.StringVar(value='5')
         
         lmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['lmargin'], width=7, state='disabled', command=plot_callback)
-        lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['lmargin_entry'] = lmargin_spinbox
+        lmargin_spinbox.grid(row=1, column=1); lmargin_spinbox.bind("<Return>", plot_callback); widgets['lmargin_entry'] = lmargin_spinbox
         ttk.Label(layout_frame, text="Left (+):").grid(row=1, column=0, sticky='w')
 
         rmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['rmargin'], width=7, state='disabled', command=plot_callback)
-        rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['rmargin_entry'] = rmargin_spinbox
+        rmargin_spinbox.grid(row=1, column=3); rmargin_spinbox.bind("<Return>", plot_callback); widgets['rmargin_entry'] = rmargin_spinbox
         ttk.Label(layout_frame, text="Right (-):").grid(row=1, column=2, sticky='w')
 
         tmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['tmargin'], width=7, state='disabled', command=plot_callback)
-        tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['tmargin_entry'] = tmargin_spinbox
+        tmargin_spinbox.grid(row=2, column=1); tmargin_spinbox.bind("<Return>", plot_callback); widgets['tmargin_entry'] = tmargin_spinbox
         ttk.Label(layout_frame, text="Top (-):").grid(row=2, column=0, sticky='w')
 
         bmargin_spinbox = ttk.Spinbox(layout_frame, from_=0, to=1000, increment=1, textvariable=widgets['bmargin'], width=7, state='disabled', command=plot_callback)
-        bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", lambda event: self.plot(widgets, key)); widgets['bmargin_entry'] = bmargin_spinbox
+        bmargin_spinbox.grid(row=2, column=3); bmargin_spinbox.bind("<Return>", plot_callback); widgets['bmargin_entry'] = bmargin_spinbox
         ttk.Label(layout_frame, text="Bottom (+):").grid(row=2, column=2, sticky='w')
         
         ttk.Separator(layout_frame).grid(row=3, column=0, columnspan=4, sticky='ew', pady=10)
@@ -479,7 +493,7 @@ class GnuplotApp:
         widgets['aspect_ratio'] = tk.StringVar(value='0.75')
         widgets['aspect_ratio_entry'] = ttk.Entry(layout_frame, textvariable=widgets['aspect_ratio'], width=8, state='normal')
         widgets['aspect_ratio_entry'].grid(row=4, column=2)
-        widgets['aspect_ratio_entry'].bind("<Return>", lambda event, w=widgets, k=key: self.plot(w, k))
+        widgets['aspect_ratio_entry'].bind("<Return>", plot_callback)
         
         # --- Normal Mode Actions ---
         main_action_frame = ttk.Frame(normal_frame); main_action_frame.pack(fill='x', pady=10)
@@ -685,6 +699,13 @@ class GnuplotApp:
         
         self._switch_mode(widgets, key) # Set initial view
         return tab_frame
+
+    def _get_selected_or_focused_item(self, tree):
+        """Helper to get the ID of the selected or focused item."""
+        selected = tree.selection()
+        if selected:
+            return selected[0]
+        return tree.focus() or None
 
     def _start_log_tail(self, key, filepath):
         self._stop_log_tail(key) # Stop any previous thread
@@ -1339,10 +1360,11 @@ class GnuplotApp:
         self.plot(widgets, key)
 
     def duplicate_dataset(self, widgets, key):
-        selected_item = widgets['tree'].selection()
-        if not selected_item: messagebox.showinfo("Info", "Please select a dataset to duplicate."); return
+        selected_item = self._get_selected_or_focused_item(widgets['tree'])
+        if not selected_item:
+            messagebox.showinfo("Info", "Please select a dataset to duplicate.")
+            return
         
-        selected_item = selected_item[0]
         values = list(widgets['tree'].item(selected_item, "values"))
         full_path = widgets['tree'].item(selected_item, "tags")[0]
 
@@ -1376,12 +1398,11 @@ class GnuplotApp:
             messagebox.showerror("Error", f"Could not increment Y-column '{values[2]}'.")
 
     def load_all_columns(self, widgets, key):
-        selected_item = widgets['tree'].selection()
+        selected_item = self._get_selected_or_focused_item(widgets['tree'])
         if not selected_item: 
             messagebox.showinfo("Info", "Please select a dataset first.")
             return
 
-        selected_item = selected_item[0]
         values = list(widgets['tree'].item(selected_item, "values"))
         full_path = widgets['tree'].item(selected_item, "tags")[0]
 
@@ -1421,7 +1442,7 @@ class GnuplotApp:
         self.plot(widgets, key)
         
     def update_dataset(self, widgets, key):
-        selected_item = widgets['tree'].selection(); 
+        selected_item = self._get_selected_or_focused_item(widgets['tree'])
         if not selected_item: return
         filepath = widgets['filepath'].get()
 
@@ -1451,7 +1472,7 @@ class GnuplotApp:
         self.plot(widgets, key)
 
     def remove_dataset(self, widgets, key):
-        selected_item = widgets['tree'].selection()
+        selected_item = self._get_selected_or_focused_item(widgets['tree'])
         if selected_item: 
             widgets['tree'].delete(selected_item)
             widgets['update_button'].config(state='disabled'); widgets['duplicate_button'].config(state='disabled'); widgets['load_all_button'].config(state='disabled'); widgets['remove_button'].config(state='disabled')
@@ -1756,6 +1777,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = GnuplotApp(root)
     root.mainloop()
-
 
 
