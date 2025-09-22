@@ -1514,12 +1514,20 @@ class GnuplotApp:
         selected_item = self._get_selected_or_focused_item(widgets['tree'])
         if not selected_item: return
         filepath = widgets['filepath'].get()
+        
+        # Get original values from the tree to check if Y-column changed
+        original_values = widgets['tree'].item(selected_item, "values")
+        original_y_col = original_values[2]
+        new_y_col_str = widgets['y_col'].get()
 
         plot_title_to_set = widgets['plot_title'].get()
 
-        if widgets['detect_headers'].get() and widgets['separator'].get() == 'whitespace':
+        # Only auto-detect the header for the title if the Y-column has been changed
+        if (widgets['detect_headers'].get() and 
+            widgets['separator'].get() == 'whitespace' and
+            new_y_col_str != original_y_col):
             try:
-                y_col = int(widgets['y_col'].get())
+                y_col = int(new_y_col_str)
                 header_title = self._get_column_header(filepath, y_col)
                 if header_title:
                     plot_title_to_set = header_title
@@ -1528,7 +1536,7 @@ class GnuplotApp:
                 pass
 
         clean_state = 'Yes' if widgets['clean_data'].get() else 'No'
-        values = (os.path.basename(filepath), widgets['x_col'].get(), widgets['y_col'].get(), widgets['y_axis_select'].get(), widgets['plot_style'].get(), plot_title_to_set, clean_state)
+        values = (os.path.basename(filepath), widgets['x_col'].get(), new_y_col_str, widgets['y_axis_select'].get(), widgets['plot_style'].get(), plot_title_to_set, clean_state)
         current_tags = list(widgets['tree'].item(selected_item, 'tags'))
         
         if 'load_all_group' in current_tags:
